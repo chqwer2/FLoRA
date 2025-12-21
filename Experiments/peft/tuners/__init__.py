@@ -55,6 +55,7 @@ from .vblora import VBLoRAConfig, VBLoRAModel
 from .vera import VeraConfig, VeraModel
 from .waveft import WaveFTConfig, WaveFTModel
 from .xlora import XLoraConfig, XLoraModel
+from .flora import FloraConfig, FloraModel
 
 
 __all__ = [
@@ -132,4 +133,6 @@ __all__ = [
     "create_arrow_model",
     "get_eva_state_dict",
     "initialize_lora_eva_weights",
+    "FloraConfig",
+    "FloraModel",
 ]

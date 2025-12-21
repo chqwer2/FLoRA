@@ -1,0 +1,96 @@
+# =========================
+# Hugging Face / ML Models
+# =========================
+
+# Model weights
+*.bin
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+*.gguf
+*.onnx
+
+# Sharded model files
+*.bin.*
+*.safetensors.*
+
+# Tokenizers / vocab (optional – keep if you want reproducibility)
+tokenizer.json
+tokenizer.model
+vocab.json
+merges.txt
+
+# =========================
+# Hugging Face Cache
+# =========================
+
+# Default HF cache locations
+.cache/
+huggingface/
+hf_cache/
+.huggingface/
+
+# Explicit HF env paths
+**/hf_home/
+**/hf_cache/
+
+# =========================
+# Training Outputs
+# =========================
+
+# Checkpoints & logs
+checkpoints/
+checkpoint-*/
+runs/
+logs/
+lightning_logs/
+wandb/
+
+# TensorBoard
+events.out.tfevents.*
+
+# =========================
+# Datasets
+# =========================
+
+# Arrow / dataset caches
+*.arrow
+dataset_cache/
+datasets/
+
+# =========================
+# Python
+# =========================
+
+__pycache__/
+*.py[cod]
+*.so
+*.egg-info/
+.eggs/
+.env
+.venv
+venv/
+
+# =========================
+# Jupyter
+# =========================
+
+.ipynb_checkpoints/
+
+# =========================
+# OS / Editor
+# =========================
+
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# =========================
+# Temporary / Misc
+# =========================
+
+tmp/
+temp/
+*.log

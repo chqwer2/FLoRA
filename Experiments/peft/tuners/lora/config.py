@@ -892,50 +892,6 @@ class LoraConfig(PeftConfig):
         self._custom_modules.update(mapping)
 
 
-@dataclass
-class FLoraConfig(LoraConfig):
-    activation = field(
-        default="gelu",
-        metadata={
-            "help": "Activation function to use in FLora adapters. Supported activations are 'relu', 'gelu', 'fourier', 'polynomial', 'spline'."
-        },
-    )
-
-    spline = field(
-        default=None,
-        metadata={
-            "help": "If activation is set to 'spline', this parameter should be a dict containing the spline parameters, such as 'knots' and 'coefficients'."
-        },
-    )
-
-    polynomial = field(
-        default=None,
-        metadata={}
-    )
-
-    fourier = field(
-        default=None,
-        metadata={}
-    )
-
-    gelu = field(
-        default=None,
-        metadata={}
-    )
-
-    gate = field(
-        default=None,
-        metadata={},
-    )
-
-    nonlinearity_flex: str = field(
-        default="none",
-        metadata={
-            "help": "Type of nonlinearity flexibility to use in FLora adapters. Supported types are 'none', 'scalar', 'vector', 'matrix'."
-        },
-    )
-
-
 
 
 
