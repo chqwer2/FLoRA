@@ -14,6 +14,9 @@ from transformers import (
 from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
 
 
+cache_dir = "/Users/haochen/Documents/hf_models"
+
+
 def train_model(
     base_model: str,
     data_path: str,
@@ -49,14 +52,18 @@ def train_model(
     tokenizer = AutoTokenizer.from_pretrained(base_model, token=hf_token)
 
     # QDoRA (quantized dora): IF YOU WANNA QUANTIZE THE MODEL
+
+
     if quantize:
         if (torch.cuda.is_available() and torch.cuda.is_bf16_supported()) or torch.xpu.is_available():
             bnb_4bit_compute_dtype = torch.bfloat16
         else:
             bnb_4bit_compute_dtype = torch.float16
+
         model = AutoModelForCausalLM.from_pretrained(
             base_model,
             token=hf_token,
+            cache_dir=cache_dir,
             quantization_config=BitsAndBytesConfig(
                 load_in_4bit=True,
                 bnb_4bit_compute_dtype=bnb_4bit_compute_dtype,
@@ -64,11 +71,16 @@ def train_model(
                 bnb_4bit_quant_type="nf4",
             ),
         )
-        # setup for quantized training
-        model = prepare_model_for_kbit_training(model, use_gradient_checkpointing=True)
-    else:
-        model = AutoModelForCausalLM.from_pretrained(base_model, token=hf_token)
 
+        model = prepare_model_for_kbit_training(
+            model, use_gradient_checkpointing=True
+        )
+    else:
+        model = AutoModelForCausalLM.from_pretrained(
+            base_model,
+            token=hf_token,
+            cache_dir=cache_dir,
+        )
 
     # LoRa config for the PEFT model
     lora_config = LoraConfig(
@@ -122,6 +134,7 @@ def train_model(
         fp16=True,
         learning_rate=learning_rate,
         hub_token=hf_token,
+        remove_unused_columns=False,
     )
 
     # Clear device cache to free memory
