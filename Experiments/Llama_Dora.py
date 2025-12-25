@@ -778,7 +778,7 @@ def train_one_run(
         output_dir=output_dir,
         num_train_epochs=num_epochs,
         per_device_train_batch_size=batch_size,
-        per_device_eval_batch_size=batch_size,
+        per_device_eval_batch_size=1,
         warmup_steps=100,
         weight_decay=0.01,
         logging_dir=os.path.join(output_dir, "logs"),
@@ -786,6 +786,7 @@ def train_one_run(
         save_steps=save_step,
         save_total_limit=2,
         gradient_accumulation_steps=16,
+        eval_accumulation_steps=8,
         fp16=(device.type == "cuda"),
         bf16=False, #(device.type == "cuda" and torch.cuda.is_bf16_supported()),
         learning_rate=learning_rate,
@@ -807,10 +808,10 @@ def train_one_run(
         eps=1e-8,
     )
 
-    DEBUG = False
+    DEBUG = False 
     if DEBUG:
         tr_n = min(20, len(tokenized["train"]))
-        ev_n = min(20, len(tokenized["test"]))
+        ev_n = min(100, len(tokenized["test"]))
 
         train_dataset = tokenized["train"].select(range(tr_n))
         eval_dataset = tokenized["test"].select(range(ev_n))
@@ -834,6 +835,10 @@ def train_one_run(
     # -------------------------
     # Final evaluation on full test set
     # -------------------------
+
+    torch.cuda.empty_cache()  # optional but helpful
+    model.eval()
+
     metrics = trainer.evaluate(eval_dataset=eval_dataset, metric_key_prefix="test")
     print("\n=== Final test metrics ===")
     for k, v in metrics.items():
