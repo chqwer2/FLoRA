@@ -504,6 +504,128 @@ def compute_metrics(eval_pred):
     return {"token_acc": float(token_acc)}
 
 
+def debug_trainables(model, method: str, topn_layers: int = 10):
+    """
+    Prints:
+      - total/trainable params
+      - per-category trainable params (A/B/act/gate for flora; lora_* for lora/dora)
+      - how many layers have A/B/act/gate present + trainable
+      - sanity checks (are A/B present at all?)
+    """
+    import re
+    from collections import defaultdict
+
+    def nparams(ps):
+        return sum(p.numel() for p in ps)
+
+    total = sum(p.numel() for p in model.parameters())
+    trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    print(f"[DBG] Params: trainable={trainable:,} / total={total:,} ({100*trainable/total:.6f}%)")
+
+    # ---- method-specific categorization by parameter name ----
+    buckets = defaultdict(list)
+
+    for name, p in model.named_parameters():
+        if not p.requires_grad:
+            continue
+        n = name.lower()
+
+        if method.lower() == "flora":
+            # A/B in your FloraLinear are ModuleDict entries: "...A.<adapter>.weight" / "...B.<adapter>.weight"
+            if re.search(r"\.a\.[^.]+\.(weight|bias)$", n) or "flora_a" in n:
+                buckets["flora_A"].append(p)
+            elif re.search(r"\.b\.[^.]+\.(weight|bias)$", n) or "flora_b" in n:
+                buckets["flora_B"].append(p)
+            elif ".act." in n or "flora_act" in n or n.endswith((".knots_y", ".c")):
+                buckets["flora_act"].append(p)
+            elif "gate_after_a" in n or "gate_after_b" in n or "flora_gate" in n:
+                buckets["flora_gate"].append(p)
+            else:
+                buckets["flora_other"].append(p)
+
+        else:
+            # PEFT LoRA/DoRA commonly uses names: lora_A, lora_B, lora_magnitude_vector, etc.
+            if "lora_a" in n:
+                buckets["lora_A"].append(p)
+            elif "lora_b" in n:
+                buckets["lora_B"].append(p)
+            elif "lora_magnitude" in n or "magnitude_vector" in n:
+                buckets["dora_mag"].append(p)
+            else:
+                buckets["peft_other"].append(p)
+
+    # Print bucket totals
+    for k in sorted(buckets.keys()):
+        print(f"[DBG] trainable bucket {k:>12s}: {nparams(buckets[k]):,} params in {len(buckets[k])} tensors")
+
+    # ---- Layer/module counts (flora) ----
+    if method.lower() == "flora":
+        flora_layers = [(n, m) for n, m in model.named_modules() if m.__class__.__name__ == "FloraLinear"]
+        print(f"[DBG] Num FloraLinear modules: {len(flora_layers)}")
+        print("[DBG] First few FloraLinear:", [n for n, _ in flora_layers[:topn_layers]])
+
+        # Count how many FloraLinear have A/B/act/gates populated and how many of those params are trainable
+        cnt = {
+            "has_A": 0, "has_B": 0, "has_act": 0, "has_gateA": 0, "has_gateB": 0,
+            "trainable_A_params": 0, "trainable_B_params": 0, "trainable_act_params": 0, "trainable_gate_params": 0,
+        }
+
+        for lname, layer in flora_layers:
+            # present?
+            hasA = hasattr(layer, "A") and len(getattr(layer, "A", {})) > 0
+            hasB = hasattr(layer, "B") and len(getattr(layer, "B", {})) > 0
+            hasAct = hasattr(layer, "act") and len(getattr(layer, "act", {})) > 0
+            hasGA = hasattr(layer, "gate_after_a") and len(getattr(layer, "gate_after_a", {})) > 0
+            hasGB = hasattr(layer, "gate_after_b") and len(getattr(layer, "gate_after_b", {})) > 0
+
+            cnt["has_A"] += int(hasA)
+            cnt["has_B"] += int(hasB)
+            cnt["has_act"] += int(hasAct)
+            cnt["has_gateA"] += int(hasGA)
+            cnt["has_gateB"] += int(hasGB)
+
+            # trainable params inside those containers
+            if hasA:
+                for _, mod in layer.A.items():
+                    for p in mod.parameters():
+                        if p.requires_grad: cnt["trainable_A_params"] += p.numel()
+            if hasB:
+                for _, mod in layer.B.items():
+                    for p in mod.parameters():
+                        if p.requires_grad: cnt["trainable_B_params"] += p.numel()
+            if hasAct:
+                for _, mod in layer.act.items():
+                    for p in mod.parameters():
+                        if p.requires_grad: cnt["trainable_act_params"] += p.numel()
+            if hasGA:
+                for _, mod in layer.gate_after_a.items():
+                    for p in getattr(mod, "parameters", lambda: [])():
+                        if p.requires_grad: cnt["trainable_gate_params"] += p.numel()
+            if hasGB:
+                for _, mod in layer.gate_after_b.items():
+                    for p in getattr(mod, "parameters", lambda: [])():
+                        if p.requires_grad: cnt["trainable_gate_params"] += p.numel()
+
+        print("[DBG] FloraLinear container presence:",
+              f"A:{cnt['has_A']}/{len(flora_layers)}",
+              f"B:{cnt['has_B']}/{len(flora_layers)}",
+              f"act:{cnt['has_act']}/{len(flora_layers)}",
+              f"gateA:{cnt['has_gateA']}/{len(flora_layers)}",
+              f"gateB:{cnt['has_gateB']}/{len(flora_layers)}")
+
+        print("[DBG] Trainable params inside FloraLinear:",
+              f"A={cnt['trainable_A_params']:,}",
+              f"B={cnt['trainable_B_params']:,}",
+              f"act={cnt['trainable_act_params']:,}",
+              f"gate={cnt['trainable_gate_params']:,}")
+
+        # Simple existence checks by *name*
+        has_A_names = any(re.search(r"\.a\.[^.]+\.(weight|bias)$", n.lower()) for n, _ in model.named_parameters())
+        has_B_names = any(re.search(r"\.b\.[^.]+\.(weight|bias)$", n.lower()) for n, _ in model.named_parameters())
+        print("[DBG] Has A weights in named_parameters():", has_A_names,
+              "| Has B weights in named_parameters():", has_B_names)
+
+
 # -------------------------
 # Main training function (single run)
 # -------------------------
@@ -611,10 +733,6 @@ def train_one_run(
     model = get_peft_model(model, peft_cfg)
     model.to(device)
 
-    trainable = [n for n, p in model.named_parameters() if p.requires_grad]
-    print("Num trainable params:", len(trainable))
-    print("First few trainables:", trainable[:20])
-
     # Lazy init activations: one forward with fixed length
     with torch.no_grad():
         enc = tokenizer("hello", return_tensors="pt")
@@ -630,11 +748,14 @@ def train_one_run(
         _ = model(input_ids=ids, attention_mask=attn)
 
     # Freeze everything except flora params if requested
-    if only_train_flora_params and method.lower() == "flora":
+    if method.lower() == "flora":
         set_trainable_only_flora(model)
 
     total, trainable = count_trainable_params(model)
     print(f"Params: trainable={trainable:,} / total={total:,} ({100*trainable/total:.4f}%)")
+
+    debug_trainables(model, method=method)
+
 
     if print_forward_mean_ms:
         ms = mean_forward_ms(model, tokenizer, device=device, seq_len=min(128, cutoff_len), iters=20, warmup=5)

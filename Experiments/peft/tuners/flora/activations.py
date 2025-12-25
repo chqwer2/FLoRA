@@ -178,6 +178,8 @@ class FlexFourier(nn.Module):
         self.init_scale = float(init_scale)
         self.max_h = max_h
         self.max_w = max_w
+        self.init_w = 1.0
+        self.init_p = 0  # <-- FIX
 
         self.a: Optional[nn.Parameter] = None
         self.w: Optional[nn.Parameter] = None
@@ -190,8 +192,12 @@ class FlexFourier(nn.Module):
             base = _param_base_shape(self.mode, H, W, C, max_h=self.max_h, max_w=self.max_w)
             shape = base + (self.n_terms,)
 
-            # residual amplitude tiny => near-identity
-            a = torch.empty(shape, device=x.device, dtype=x.dtype).normal_(0.0, self.init_scale)
+            # IMPORTANT: identity init => residual amplitude == 0
+            if self.init_scale == 0.0:
+                a = torch.zeros(shape, device=x.device, dtype=x.dtype)
+            else:
+                a = torch.empty(shape, device=x.device, dtype=x.dtype).normal_(0.0, self.init_scale)
+
             w = torch.full(shape, self.init_w, device=x.device, dtype=x.dtype)
             p = torch.full(shape, self.init_p, device=x.device, dtype=x.dtype)
 
@@ -211,13 +217,11 @@ class FlexFourier(nn.Module):
         if a is None or w is None or p is None:
             return x
 
-        # slice spatial tables if needed
         if self.mode in ("spatial", "voxel"):
             a = _slice_hw(a, H, W)
             w = _slice_hw(w, H, W)
             p = _slice_hw(p, H, W)
 
-        # broadcast to x with extra term dim
         # x_e: [..., H, W, C, 1]
         x_e = x.unsqueeze(-1)
 
@@ -227,8 +231,8 @@ class FlexFourier(nn.Module):
             w = w.unsqueeze(0)
             p = p.unsqueeze(0)
 
-        y = (a * torch.sin(w * x_e + p)).sum(dim=-1)  # [..., H, W, C]
-        return y
+        residual = (a * torch.sin(w * x_e + p)).sum(dim=-1)  # [..., H, W, C]
+        return x + residual  # <-- identity at init when a==0
 
 
 class FlexSpline(nn.Module):

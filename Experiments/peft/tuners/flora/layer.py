@@ -11,10 +11,6 @@ from .gates import Gate
 
 
 def _to_hwc(z: torch.Tensor) -> Tuple[torch.Tensor, Tuple[int, int, int], int]:
-    """
-    Make z look like [...,H,W,C] where C is last dim.
-    Return (z_hwc, (H,W,C), orig_ndim).
-    """
     orig_ndim = z.ndim
     if z.ndim >= 4:
         H, W, C = int(z.shape[-3]), int(z.shape[-2]), int(z.shape[-1])
@@ -39,30 +35,41 @@ def _from_hwc(z_hwc: torch.Tensor, orig_ndim: int) -> torch.Tensor:
 
 
 class FloraLinear(nn.Module):
+    """
+    PEFT-compatible FloraLinear:
+      - Keeps __init__(base_layer, module_key=None) (what PEFT expects)
+      - Stores A/B as lora_A/lora_B so PEFT will mark them trainable
+      - You can still refer to A/B if you like via aliases
+      - Activation and gates are optional (can be Identity)
+    """
+
     def __init__(self, base_layer: nn.Linear, module_key: Optional[str] = None):
         super().__init__()
         if not isinstance(base_layer, nn.Linear):
             raise TypeError(f"FloraLinear only supports nn.Linear, got {type(base_layer)}")
-        self.base_layer = base_layer
 
-        # Module name/path for debug messages
+        self.base_layer = base_layer
         self.module_key = module_key or "<unknown>"
 
-        self.A = nn.ModuleDict()
-        self.B = nn.ModuleDict()
+        # --- IMPORTANT: PEFT looks for these names for trainability ---
+        self.lora_A = nn.ModuleDict()
+        self.lora_B = nn.ModuleDict()
+
+        # Optional: keep your old attribute names as aliases (same objects)
+        self.A = self.lora_A
+        self.B = self.lora_B
+
+        # Activations / dropout / gates per adapter name
         self.act = nn.ModuleDict()
         self.drop = nn.ModuleDict()
-
         self.gate_after_a = nn.ModuleDict()
         self.gate_after_b = nn.ModuleDict()
 
         self.scaling: Dict[str, float] = {}
         self._active_adapter: Optional[str] = None
 
-        # forward debug "print once"
+        # debug / logging
         self._forward_logged: Dict[str, bool] = {}
-
-        # store debug flags per adapter
         self._dbg: Dict[str, Dict[str, bool]] = {}
 
     @property
@@ -74,33 +81,53 @@ class FloraLinear(nn.Module):
         return self.base_layer.out_features
 
     def set_active_adapter(self, name: Optional[str]):
+        # PEFT will call this
         self._active_adapter = name
 
     def add_adapter(self, adapter_name: str, cfg: FloraConfig):
+        """
+        PEFT calls this (usually adapter_name == "default").
+        The key fix is: put A/B into lora_A/lora_B so PEFT will unfreeze them.
+        """
         r = int(cfg.r)
         if r <= 0:
             raise ValueError("FloraConfig.r must be > 0")
 
-        self.A[adapter_name] = nn.Linear(self.in_features, r, bias=False)
-        self.B[adapter_name] = nn.Linear(r, self.out_features, bias=False)
+        # Create A/B
+        A = nn.Linear(self.in_features, r, bias=False)
+        B = nn.Linear(r, self.out_features, bias=False)
 
-        nn.init.kaiming_uniform_(self.A[adapter_name].weight, a=5**0.5)
-        nn.init.zeros_(self.B[adapter_name].weight)
+        # Original LoRA init style
+        nn.init.kaiming_uniform_(A.weight, a=5**0.5)
+        nn.init.zeros_(B.weight)
 
-        self.drop[adapter_name] = (
-            nn.Dropout(p=cfg.lora_dropout) if getattr(cfg, "lora_dropout", 0.0) and cfg.lora_dropout > 0 else nn.Identity()
-        )
+        # --- register under PEFT-recognized names ---
+        self.lora_A[adapter_name] = A
+        self.lora_B[adapter_name] = B
+
+        # Make sure they are trainable (even if something else tries to freeze)
+        for p in self.lora_A[adapter_name].parameters():
+            p.requires_grad = True
+        for p in self.lora_B[adapter_name].parameters():
+            p.requires_grad = True
+
+        # dropout
+        lora_dropout = float(getattr(cfg, "lora_dropout", 0.0) or 0.0)
+        self.drop[adapter_name] = nn.Dropout(p=lora_dropout) if lora_dropout > 0 else nn.Identity()
+
+        # scaling
         self.scaling[adapter_name] = float(cfg.lora_alpha) / float(r)
 
+        # activation (can be identity)
         self.act[adapter_name] = make_flora_activation(
             kind=cfg.flora_activation,
             mode=cfg.flora_flex_mode,
             **(cfg.flora_activation_kwargs or {}),
         )
 
-        # Gates
+        # gates (can be identity)
         gate_type = str(getattr(cfg, "flora_gate_type", "none")).lower()
-        gate_pos = getattr(cfg, "flora_gate_position", "after_b")
+        gate_pos = str(getattr(cfg, "flora_gate_position", "after_b")).lower()
         gate_init = float(getattr(cfg, "flora_gate_init", -6.0))
         init_a = 0.0 if gate_type == "rezero" else gate_init
         init_b = 0.0 if gate_type == "rezero" else gate_init
@@ -112,8 +139,8 @@ class FloraLinear(nn.Module):
                 gate_mode=mode_a,
                 n_features=r if mode_a == "per_dim" else None,
                 init=init_a,
-                dtype=self.A[adapter_name].weight.dtype,
-                device=self.A[adapter_name].weight.device,
+                dtype=A.weight.dtype,
+                device=A.weight.device,
             )
         else:
             self.gate_after_a[adapter_name] = nn.Identity()
@@ -125,13 +152,13 @@ class FloraLinear(nn.Module):
                 gate_mode=mode_b,
                 n_features=self.out_features if mode_b == "per_dim" else None,
                 init=init_b,
-                dtype=self.B[adapter_name].weight.dtype,
-                device=self.B[adapter_name].weight.device,
+                dtype=B.weight.dtype,
+                device=B.weight.device,
             )
         else:
             self.gate_after_b[adapter_name] = nn.Identity()
 
-        # Debug flags
+        # debug flags
         self._dbg[adapter_name] = {
             "debug": bool(getattr(cfg, "flora_debug", False)),
             "verbose": bool(getattr(cfg, "flora_debug_verbose", False)),
@@ -141,72 +168,42 @@ class FloraLinear(nn.Module):
         }
         self._forward_logged[adapter_name] = False
 
-    def _get_adapter(self, adapter_name: Optional[str]) -> Optional[str]:
-        # 1) explicit override
+        if self._active_adapter is None:
+            self._active_adapter = adapter_name
+
+    def _pick_adapter(self, adapter_name: Optional[str]) -> Optional[str]:
         if adapter_name is not None:
             return adapter_name
-
-        # 2) active adapter set by model wrapper
         if self._active_adapter is not None:
             return self._active_adapter
-
-        # 3) fallback: if there's exactly one adapter in the module, use it
-        if len(self.A) == 1:
-            return next(iter(self.A.keys()))
-
+        if len(self.lora_A) == 1:
+            return next(iter(self.lora_A.keys()))
         return None
 
     def forward(self, x: torch.Tensor, adapter_name: Optional[str] = None) -> torch.Tensor:
-
         y = self.base_layer(x)
-        name = self._get_adapter(adapter_name)
-        if name is None or name not in self.A:
-            # print("Returning base layer output without Flora adapter")
+
+        name = self._pick_adapter(adapter_name)
+        if name is None or name not in self.lora_A:
             return y
 
-
-
-        A = self.A[name]
-        B = self.B[name]
+        A = self.lora_A[name]
+        B = self.lora_B[name]
         act = self.act[name]
         drop = self.drop[name]
         gateA = self.gate_after_a[name]
         gateB = self.gate_after_b[name]
         scale = self.scaling[name]
 
-        dbg = self._dbg.get(name, {})
-        do_fwd_log = dbg.get("forward", False)
-        once = dbg.get("forward_once", True)
-
-
         z = A(drop(x))
         z = gateA(z)
 
-        used_activation = not isinstance(act, nn.Identity)
-        if used_activation:
-            z_hwc, (H, W, C), orig_ndim = _to_hwc(z)
+        if not isinstance(act, nn.Identity):
+            z_hwc, _, orig_ndim = _to_hwc(z)
             z_hwc = act(z_hwc)
             z = _from_hwc(z_hwc, orig_ndim)
-        else:
-            H = W = C = -1  # for printing
 
         dz = B(z)
         dz = gateB(dz)
-        out = y + dz * scale
 
-        if do_fwd_log and (not once or not self._forward_logged.get(name, False)):
-            self._forward_logged[name] = True
-            gate_type = type(gateA).__name__ if not isinstance(gateA, nn.Identity) else "OFF"
-            gate_type_b = type(gateB).__name__ if not isinstance(gateB, nn.Identity) else "OFF"
-            act_name = type(act).__name__ if used_activation else "OFF"
-            print(
-                f"[FLORA:FWD] {self.module_key} adapter='{name}' "
-                f"A_out={tuple(z.shape)} act={act_name} (H,W,C={H},{W},{C}) "
-                f"gateA={gate_type} gateB={gate_type_b} scale={scale:.4g}"
-            )
-
-        if dbg.get("check_nan", False):
-            if not torch.isfinite(dz).all():
-                print(f"[FLORA:WARN] Non-finite adapter delta in {self.module_key} adapter='{name}'")
-
-        return out
+        return y + dz * scale
