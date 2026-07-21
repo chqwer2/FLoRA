@@ -264,7 +264,10 @@ class LeNALinear(nn.Module):
         scale = self.scaling[name]
 
         # Low-rank code z = A x  (shape [..., r]).
-        z = A(drop(x))
+        # The base layer may be fp16/bf16 while the adapter params are kept in fp32
+        # (mixed-precision training), so run the whole adapter branch in A's dtype
+        # and cast the delta back to y's dtype at the end.
+        z = A(drop(x).to(A.weight.dtype))
 
         # Gated linear<->nonlinear interpolation in the code:
         #     h = z + g * (phi(z) - z) = (1-g) z + g phi(z)
@@ -291,9 +294,9 @@ class LeNALinear(nn.Module):
             # LeNA-D: DoRA-style magnitude/direction rescaling. NOTE: the direction norm
             # is computed from a *linearized* delta (B@A), an approximation when phi is
             # nonlinear. Kept as an optional variant, off by default.
-            x_eye = torch.eye(A.weight.shape[1], device=A.weight.device, dtype=x.dtype)
+            x_eye = torch.eye(A.weight.shape[1], device=A.weight.device, dtype=A.weight.dtype)
             lora_weight = B(A(x_eye))
-            weight = dequantize_module_weight(self.base_layer).to(x.dtype)
+            weight = dequantize_module_weight(self.base_layer).to(lora_weight.dtype)
             weight_norm = self.get_weight_norm(weight, lora_weight.detach(), scale).detach()
             mag_norm_scale = (self.magnitude[name] / weight_norm).view(1, -1).to(y.dtype)
             if self.base_layer.bias is not None:
@@ -301,7 +304,7 @@ class LeNALinear(nn.Module):
             return mag_norm_scale * y + mag_norm_scale * dz.to(y.dtype) * scale
 
         # Plain (non-DoRA) LeNA path: frozen output + scaled nonlinear low-rank delta.
-        return y + dz * scale
+        return y + (dz * scale).to(y.dtype)
 
     def _gate_value(self, gate: nn.Module, z: torch.Tensor) -> Optional[torch.Tensor]:
         """Return the selection gate g in [0,1] broadcastable to z, or None (always-on)."""
