@@ -176,7 +176,7 @@ class FlexSwish(nn.Module):
 
             if self.use_gate != "none":
                 self.t = nn.Parameter(
-                    torch.full((H, W, C), self.init_t, dtype=x.dtype, device=x.device)
+                    torch.full((H, W, C), self.init_gate, dtype=x.dtype, device=x.device)
                 )
 
         else:
@@ -475,7 +475,8 @@ class FlexSpline(nn.Module):
         residual = t * (y1 - y0)
 
         if self.use_gate == "none":
-            return residual
+            # spline value = y0 + t*(y1 - y0); the bare increment omitted y0 (bug).
+            return y0 + residual
         elif self.use_gate == "residual":
             return y0 + residual  # <-- identity at init when a==0
         else:

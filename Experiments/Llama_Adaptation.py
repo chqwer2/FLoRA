@@ -24,6 +24,7 @@ from peft import (
 
 # If your fork exports LeNAConfig from peft
 from peft import LeNAConfig
+from peft.tuners.lena.layer import lena_gate_l1
 
 
 # -------------------------
@@ -36,8 +37,11 @@ fallback_dir2 = "/root/autodl-tmp/hf_home/hub"
 
 print("os.path.isdir(fallback_dir2) = ", os.path.isdir(fallback_dir2))
 
-
-if os.path.isdir(preferred_dir):
+# Prefer the HF_HOME cache if set (e.g. on Kelvin2: /mnt/scratch2/.../hf_home).
+_hf_home = os.environ.get("HF_HOME")
+if _hf_home:
+    cache_dir = os.path.join(_hf_home, "hub")
+elif os.path.isdir(preferred_dir):
     cache_dir = preferred_dir
 elif os.path.isdir(fallback_dir2):
     cache_dir = fallback_dir2
@@ -49,7 +53,28 @@ else:
 
 
 print("cache_dir =", cache_dir)
-DEBUG = False
+# Quick smoke mode: slice datasets to a few dozen samples (set LENA_DEBUG=1).
+DEBUG = os.environ.get("LENA_DEBUG", "0") == "1"
+
+
+class LeNAGateL1Trainer(Trainer):
+    """Trainer that adds `coef * mean_gate_openness` to the loss.
+
+    This is the "learn where" regularizer: it pushes the selection gates closed
+    (linear/LoRA) unless a location's nonlinearity earns its keep, yielding a sparse
+    set of nonlinear locations (report it as "only X% of locations go nonlinear").
+    """
+    def __init__(self, *args, lena_gate_l1_coef: float = 0.0, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.lena_gate_l1_coef = float(lena_gate_l1_coef)
+
+    def compute_loss(self, model, inputs, return_outputs=False, **kwargs):
+        loss, outputs = super().compute_loss(model, inputs, return_outputs=True, **kwargs)
+        if self.lena_gate_l1_coef > 0:
+            pen = lena_gate_l1(model)
+            if pen is not None:
+                loss = loss + self.lena_gate_l1_coef * pen
+        return (loss, outputs) if return_outputs else loss
 
 
 # -------------------------
@@ -329,6 +354,7 @@ def load_tokenize_one(
     val_set_size: int,
     cache_dir: str,
 ) -> DatasetDict:
+
     # Load
     if data_name and data_name.strip():
         ds = load_dataset(data_path, data_name.strip(), cache_dir=cache_dir)
@@ -405,7 +431,7 @@ def set_trainable_only_lena(model):
         if cls not in ("LeNALinear", "LeNAConv1D"):
             continue
 
-        for attr in ("A", "B", "act", "gate_after_a", "gate_after_b", "lena_A", "lena_B", "lena_act"):
+        for attr in ("A", "B", "act", "gate", "gate_after_a", "gate_after_b", "lena_A", "lena_B", "lena_act"):
             d = getattr(mod, attr, None)
             if d is None:
                 continue
@@ -483,6 +509,9 @@ def build_peft_config(
     lena_debug: bool = False,
     lena_gate_mode="global",
     gate_strength="hard",
+    lena_use_dora: bool = False,
+    lena_norm_before_act: bool = False,
+    lena_gate_init: float = -2.0,
 ):
     method = method.lower()
     if method in ("lora", "dora"):
@@ -512,6 +541,9 @@ def build_peft_config(
             lena_debug_check_nan=True,
             lena_gate_mode=lena_gate_mode,
             gate_strength=gate_strength,
+            lena_use_dora=lena_use_dora,
+            lena_norm_before_act=lena_norm_before_act,
+            lena_gate_init=lena_gate_init,
         )
 
     raise ValueError(f"Unknown method: {method}")
@@ -776,6 +808,10 @@ def train_one_run(
     hub_model_id: str,
     lena_gate_mode="global",
     gate_strength="hard",
+    lena_use_dora: bool = False,
+    lena_gate_l1_coef: float = 0.0,
+    lena_norm_before_act: bool = False,
+    lena_gate_init: float = -2.0,
 ):
     os.environ["TOKENIZERS_PARALLELISM"] = "false"
     hf_token = os.getenv("HF_TOKEN")
@@ -813,6 +849,7 @@ def train_one_run(
             base_model,
             token=hf_token,
             cache_dir=cache_dir,
+            torch_dtype=torch.float16,   # keep base in fp16 (fits 24-32G GPUs); adapters train via autocast
         )
 
     model.to(device)
@@ -846,6 +883,9 @@ def train_one_run(
         lena_debug=False,
         lena_gate_mode=lena_gate_mode,
         gate_strength=gate_strength,
+        lena_use_dora=lena_use_dora,
+        lena_norm_before_act=lena_norm_before_act,
+        lena_gate_init=lena_gate_init,
     )
 
     # Wrap model
@@ -874,6 +914,12 @@ def train_one_run(
     if method.lower() == "lena":
         set_trainable_only_lena(model)
 
+    # Mixed precision: frozen base stays fp16 (memory); trainable adapter params -> fp32
+    # for stable optimization (avoids fp16 master-weight underflow). Base is 13G, adapters tiny.
+    for p in model.parameters():
+        if p.requires_grad:
+            p.data = p.data.float()
+
     total, trainable = count_trainable_params(model)
     print(f"Params: trainable={trainable:,} / total={total:,} ({100*trainable/total:.4f}%)")
 
@@ -895,13 +941,15 @@ def train_one_run(
     # MULTI-DATASET LOADING
     # -------------------------
     # dataset_specs overrides single data_path/data_name if provided
-    specs = dataset_specs  # or []
+    specs = dataset_specs[0].split()   # or []
+
     train_splits = []
     test_splits_by_name = {}
+    print("specs = ", specs)
 
     for spec in specs:
         dp, dn, display = parse_dataset_spec(spec)
-        print(f"\n[DATA] Loading: {display}")
+        print(f"\n[DATA] Loading: {display}, {dp}, {dn}")
 
         tok = load_tokenize_one(
             data_path=dp,
@@ -976,14 +1024,14 @@ def train_one_run(
         eps=1e-8,
     )
 
-    if DEBUG:
-        train_dataset = train_dataset.select(range(min(200, len(train_dataset))))
-        # keep eval datasets small too
-        for k in list(test_splits_by_name.keys()):
-            ds = test_splits_by_name[k]
-            test_splits_by_name[k] = ds.select(range(min(200, len(ds))))
-        first_name = list(test_splits_by_name.keys())[0]
-        eval_dataset = test_splits_by_name[first_name]
+    # if DEBUG:
+    #     train_dataset = train_dataset.select(range(min(200, len(train_dataset))))
+    #     # keep eval datasets small too
+    #     for k in list(test_splits_by_name.keys()):
+    #         ds = test_splits_by_name[k]
+    #         test_splits_by_name[k] = ds.select(range(min(200, len(ds))))
+    #     first_name = list(test_splits_by_name.keys())[0]
+    #     eval_dataset = test_splits_by_name[first_name]
 
 
     # Try to analysis model with Params whole, Params for training, and the percentage
@@ -1072,9 +1120,10 @@ def train_one_run(
     print(f"Evaluation dataset={len(eval_dataset)}")
 
     print("\n[START]")
-    model = model.to(dtype=torch.float32)
+    # Keep the frozen base in fp16 (memory); Trainer fp16 autocast handles mixed precision.
+    # (Casting the whole 7B model to float32 OOMs a 32G GPU.)
 
-    trainer = Trainer(
+    trainer_kwargs = dict(
         model=model,
         args=training_args,
         train_dataset=train_dataset,
@@ -1084,6 +1133,11 @@ def train_one_run(
         compute_metrics=compute_metrics,  # <-- add this
         preprocess_logits_for_metrics=preprocess_logits_for_metrics,
     )
+    if method.lower() == "lena" and lena_gate_l1_coef > 0:
+        trainer = LeNAGateL1Trainer(lena_gate_l1_coef=lena_gate_l1_coef, **trainer_kwargs)
+        print(f"[LeNA] gate-L1 'learn where' penalty enabled: coef={lena_gate_l1_coef}")
+    else:
+        trainer = Trainer(**trainer_kwargs)
 
 
     trainer.train()
@@ -1113,6 +1167,22 @@ def train_one_run(
     os.makedirs(output_dir, exist_ok=True)
     with open(os.path.join(output_dir, "test_metrics_by_dataset.json"), "w") as f:
         json.dump(all_metrics, f, indent=2)
+
+    # ---- Export the selection-gate "where-map": per-module gate openness in [0,1].
+    # Feed lena_gate_map.json to plot.py for the where-heatmap (Fig.1 panel B).
+    if method.lower() == "lena":
+        try:
+            from peft.tuners.lena.layer import lena_gate_report
+            gate_map = lena_gate_report(model)
+            with open(os.path.join(output_dir, "lena_gate_map.json"), "w") as f:
+                json.dump(gate_map, f, indent=2)
+            if gate_map:
+                vals = list(gate_map.values())
+                frac = sum(v > 0.5 for v in vals) / len(vals)
+                print(f"[LeNA where-map] {len(vals)} gated modules | mean openness={sum(vals)/len(vals):.3f} "
+                      f"| fraction 'open' (>0.5) = {100*frac:.1f}%  (the 'only X% go nonlinear' number)")
+        except Exception as e:
+            print("[LeNA where-map] export skipped:", e)
 
 
 
@@ -1330,6 +1400,19 @@ if __name__ == "__main__":
         help="Gate mode for position after_a",
     )
     parser.add_argument("--gate_strength", type=str, default="soft",)
+    parser.add_argument("--lena_use_dora", action="store_true",
+                        help="Use DoRA-style magnitude/direction decomposition (the 'LeNA-D' variant). "
+                             "Off by default so the nonlinearity's gain is measured independently of DoRA.")
+    parser.add_argument("--lena_gate_l1", type=float, default=0.0,
+                        help="Coefficient for the gate-openness L1 penalty ('learn where' sparsity). "
+                             "0 disables it; try 1e-3..1e-2.")
+    parser.add_argument("--lena_norm_before_act", action="store_true",
+                        help="LayerNorm the code z before the activation (input conditioning for phi; "
+                             "keeps spline/poly in-range and init-scale insensitive).")
+    parser.add_argument("--lena_gate_init", type=float, default=-2.0,
+                        help="Pre-sigmoid gate init. NEGATIVE => start near-closed (start at LoRA). "
+                             "POSITIVE (e.g. 2.0) => start OPEN; REQUIRED for the L1 'prune' sparsity "
+                             "recipe (init-closed + L1 collapses / dead-gates).")
 
     parser.add_argument("--only_train_lena_params", action="store_true")
     parser.add_argument("--print_forward_mean_ms", action="store_true")
@@ -1371,4 +1454,8 @@ if __name__ == "__main__":
         print_forward_mean_ms=args.print_forward_mean_ms,
         lena_gate_mode=args.lena_gate_mode,
         gate_strength=args.gate_strength,
+        lena_use_dora=args.lena_use_dora,
+        lena_gate_l1_coef=args.lena_gate_l1,
+        lena_norm_before_act=args.lena_norm_before_act,
+        lena_gate_init=args.lena_gate_init,
     )

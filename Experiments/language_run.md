@@ -6,8 +6,7 @@
 dataset="google/boolq" 
 
 
-dataset="google/boolq \
-         piqa \
+dataset="google/boolq piqa \
          allenai/social_i_qa \
          Rowan/hellaswag \
          allenai/winogrande:winogrande_xl \

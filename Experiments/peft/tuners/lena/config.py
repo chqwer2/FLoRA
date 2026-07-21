@@ -26,13 +26,24 @@ class LeNAConfig(LoraConfig):
 
     # gating
     lena_gate_type: LeNAGateType = "none"
-    lena_gate_position: LeNAGatePos = "after_b"
+    lena_gate_position: LeNAGatePos = "after_b"  # deprecated: single selection gate acts on the code z
     lena_gate_mode: LeNAGateMode = "global"
-    lena_gate_init: float = 1
+    lena_gate_init: float = -2.0  # pre-sigmoid; negative => gate starts near-closed (starts at LoRA)
     gate_strength: str = "soft"  # Literal["soft", "hard"] = "soft"
 
     # merge
     allow_merge: bool = False
+
+    # DoRA-style magnitude/direction decomposition on the nonlinear path.
+    # Default OFF so LeNA's nonlinearity gain can be measured independently of DoRA.
+    # Set True for the "LeNA-D" variant.
+    lena_use_dora: bool = False
+
+    # Normalize the low-rank code z before feeding it to the activation phi
+    # (LayerNorm over the r dims). Keeps phi's input well-scaled so spline/polynomial
+    # stay in-range and are insensitive to init scale. The linear skip still uses the
+    # raw z, so the exact LoRA fallback (gate closed) is preserved.
+    lena_norm_before_act: bool = False
 
     # ---- DEBUG ----
     lena_debug: bool = False                 # enable debug logging

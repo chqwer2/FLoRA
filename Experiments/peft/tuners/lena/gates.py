@@ -36,7 +36,7 @@ class Gate(nn.Module):
         self.gate_type = gate_type
         self.gate_mode = gate_mode
         self.gate_strength = gate_strength
-        self.init = 1 # float(init)
+        self.init = float(init)  # honor configured gate_init (e.g. negative => start near-off)
         self.dtype = dtype
         self.device = device
 
@@ -119,6 +119,33 @@ class Gate(nn.Module):
             return p.view(1, *p.shape)  # (1,N,C)
 
         raise ValueError(f"Unknown gate_mode: {self.gate_mode}")
+
+    # -------------------------
+    # gate value (for interpolation h = z + g*(phi-z))
+    # -------------------------
+    def value(self, x: torch.Tensor) -> Optional[torch.Tensor]:
+        """Return gate g in [0,1], reshaped to broadcast against x. None if gate disabled."""
+        if self.gate_type == "none":
+            return None
+        self._init_param_from_x(x)
+        p = self._reshape_param_for_x(x)
+        if self.gate_type == "sigmoid":
+            return torch.sigmoid(p) if self.gate_strength == "soft" else self._hard_sigmoid_st(p)
+        if self.gate_type == "rezero":
+            return p if self.gate_strength == "soft" else self._hard_rezero_st(p)
+        raise ValueError(f"Unknown gate_type: {self.gate_type}")
+
+    def openness(self) -> Optional[torch.Tensor]:
+        """Differentiable per-element gate openness in [0,1] from the raw parameter.
+        Input-independent (the gate parameter does not depend on x), so usable directly
+        for an L1 sparsity penalty and for 'where is nonlinearity used' analysis."""
+        if self.gate_type == "none" or self.param is None:
+            return None
+        if self.gate_type == "sigmoid":
+            return torch.sigmoid(self.param)
+        if self.gate_type == "rezero":
+            return self.param.clamp(0.0, 1.0)
+        return None
 
     # -------------------------
     # forward

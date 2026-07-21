@@ -69,11 +69,12 @@ class LeNALinear(nn.Module):
         self.A = self.lora_A
         self.B = self.lora_B
 
-        # Activations / dropout / gates per adapter name
+        # Activations / dropout / gate per adapter name
         self.act = nn.ModuleDict()
         self.drop = nn.ModuleDict()
-        self.gate_after_a = nn.ModuleDict()
-        self.gate_after_b = nn.ModuleDict()
+        # Single selection gate g in [0,1]: interpolates z (linear/LoRA) <-> phi(z) (nonlinear),
+        # via h = z + g*(phi(z) - z) = (1-g)*z + g*phi(z). Initialized closed => starts at LoRA.
+        self.gate = nn.ModuleDict()
 
         self.scaling: Dict[str, float] = {}
         self._active_adapter: Optional[str] = None
@@ -84,7 +85,7 @@ class LeNALinear(nn.Module):
         self._forward_logged: Dict[str, bool] = {}
         self._dbg: Dict[str, Dict[str, bool]] = {}
 
-        self.use_dora = True   # Placeholder for potential future use, no very efficiency
+        self.use_dora = False   # set per-adapter from cfg.lena_use_dora in add_adapter()
 
         w = self.base_layer.weight
         out_f, in_f = self.out_features, self.in_features
@@ -143,6 +144,13 @@ class LeNALinear(nn.Module):
         lora_dropout = float(getattr(cfg, "lora_dropout", 0.0) or 0.0)
         self.drop[adapter_name] = nn.Dropout(p=lora_dropout) if lora_dropout > 0 else nn.Identity()
 
+        # DoRA-style decomposition (LeNA-D). Default OFF so the nonlinearity's
+        # contribution can be separated from DoRA in ablations.
+        self.use_dora = bool(getattr(cfg, "lena_use_dora", False))
+
+        # Normalize the code z before the activation (input conditioning for phi).
+        self.use_norm_before_act = bool(getattr(cfg, "lena_norm_before_act", False))
+
         # scaling
         # This is for LoRA
         # self.scaling[adapter_name] = float(cfg.lora_alpha) / float(r)
@@ -152,11 +160,16 @@ class LeNALinear(nn.Module):
 
         self.norm_before_act[adapter_name] = nn.LayerNorm(r)
 
-        # activation (can be identity)
+        # activation (can be identity). Built in RAW mode: the layer's selection gate
+        # (below) does the linear<->nonlinear interpolation, so activations no longer
+        # carry their own inconsistent identity-init / internal gating.
+        act_kwargs = dict(cfg.lena_activation_kwargs or {})
+        if str(cfg.lena_activation).lower() in ("fourier", "spline", "polynomial", "swish"):
+            act_kwargs["use_gate"] = "none"
         self.act[adapter_name] = make_lena_activation(
             kind=cfg.lena_activation,
             mode=cfg.lena_flex_mode,
-            **(cfg.lena_activation_kwargs or {}),
+            **act_kwargs,
         )
 
         # weight_norm
@@ -178,40 +191,27 @@ class LeNALinear(nn.Module):
                 requires_grad=True
             )
 
-        # gates (can be identity)
+        # ---- Selection gate ----
+        # One gate g in [0,1] on the low-rank code z, at the configured placement
+        # granularity (global/rank/token/voxel). Initialized near-CLOSED (g approx 0)
+        # so LeNA starts exactly at LoRA and learns *where* to open nonlinearity.
         gate_type = str(getattr(cfg, "lena_gate_type", "none")).lower()
-        gate_pos = str(getattr(cfg, "lena_gate_position", "after_b")).lower()
-        gate_init = float(getattr(cfg, "lena_gate_init", 1))
-        init_a = 0.0 if gate_type == "rezero" else gate_init
-        init_b = 0.0 if gate_type == "rezero" else gate_init
+        gate_init = float(getattr(cfg, "lena_gate_init", -2.0))
         mode = str(getattr(cfg, "lena_gate_mode", "global")).lower()
         gate_strength = str(getattr(cfg, "gate_strength", "soft")).lower()
+        init = 0.0 if gate_type == "rezero" else gate_init
 
-        if gate_type != "none" and gate_pos in ("after_a", "both"):
-
-            self.gate_after_a[adapter_name] = Gate(
+        if gate_type != "none":
+            self.gate[adapter_name] = Gate(
                 gate_type=gate_type,  # type: ignore[arg-type]
                 gate_mode=mode,
-                init=init_a,
+                init=init,
                 dtype=A.weight.dtype,
                 device=A.weight.device,
-                gate_strength=gate_strength
+                gate_strength=gate_strength,
             )
         else:
-            self.gate_after_a[adapter_name] = nn.Identity()
-
-        if gate_type != "none" and gate_pos in ("after_b", "both"):
-
-            self.gate_after_b[adapter_name] = Gate(
-                gate_type=gate_type,  # type: ignore[arg-type]
-                gate_mode=mode,
-                init=init_b,
-                dtype=B.weight.dtype,
-                device=B.weight.device,
-                gate_strength=gate_strength
-            )
-        else:
-            self.gate_after_b[adapter_name] = nn.Identity()
+            self.gate[adapter_name] = nn.Identity()  # None gate == always-on nonlinearity (g=1)
 
         # debug flags
         self._dbg[adapter_name] = {
@@ -260,62 +260,95 @@ class LeNALinear(nn.Module):
         B = self.lora_B[name]
         act = self.act[name]
         drop = self.drop[name]
-
-        gateA = self.gate_after_a[name]
-        gateB = self.gate_after_b[name]
+        gate = self.gate[name]
         scale = self.scaling[name]
 
-        norm = self.norm_before_act[name]
+        # Low-rank code z = A x  (shape [..., r]).
+        z = A(drop(x))
+
+        # Gated linear<->nonlinear interpolation in the code:
+        #     h = z + g * (phi(z) - z) = (1-g) z + g phi(z)
+        # g in [0,1] is the selection gate (None => always-on nonlinearity).
+        if getattr(act, "kind", None) == "identity":
+            h = z  # pure LoRA path (no nonlinearity requested)
+        else:
+            # Input conditioning for phi (does NOT touch the linear skip below).
+            zc = self.norm_before_act[name](z) if self.use_norm_before_act else z
+            z_hwc, _, orig_ndim = _to_hwc(zc)
+            # Custom ops (LayerNorm/spline) may upcast to float32 under autocast; keep the
+            # whole interpolation in z's dtype so B(h) matches its weights (fp16/bf16).
+            phi = _from_hwc(act(z_hwc), orig_ndim).to(z.dtype)
+            phi = phi.clamp(-50.0, 50.0)  # numerical guard only (not a functional shaper)
+            g = self._gate_value(gate, z)
+            if g is not None:
+                g = g.to(z.dtype)
+            # skip uses raw z => gate closed recovers exact LoRA regardless of norm.
+            h = phi if g is None else z + g * (phi - z)
+
+        dz = B(h)
 
         if self.use_dora:
-            # x_eye = torch.eye(A.weight.shape[1], device=A.weight.device, dtype=x.dtype)
+            # LeNA-D: DoRA-style magnitude/direction rescaling. NOTE: the direction norm
+            # is computed from a *linearized* delta (B@A), an approximation when phi is
+            # nonlinear. Kept as an optional variant, off by default.
             x_eye = torch.eye(A.weight.shape[1], device=A.weight.device, dtype=x.dtype)
-
-            # if not isinstance(act, nn.Identity) and self.init:
-            #     z_hwc, _, orig_ndim = _to_hwc(x_eye)
-            #     z_hwc = act(z_hwc)
-            #     x_eye = _from_hwc(z_hwc, orig_ndim)
-
             lora_weight = B(A(x_eye))
-
-            weight = dequantize_module_weight(self.base_layer)
-            weight = weight.to(x.dtype)
-            weight_norm = self.get_weight_norm(weight, lora_weight.detach(), scale)
-
-            magnitude = self.magnitude[name]
-
-            weight_norm = weight_norm.detach()
-            mag_norm_scale = (magnitude / weight_norm).view(1, -1)
-
-        # z = A(drop(x))
-        z = A(x)  #
-        z = gateA(z)
-
-        if not isinstance(act, nn.Identity):
-            self.init = True
-            z_hwc, _, orig_ndim = _to_hwc(z)
-            z_hwc = act(z_hwc)
-            z = _from_hwc(z_hwc, orig_ndim)
-
-            z = z.clamp(-10.0, 10.0)
-
-        dz = B(z)
-        dz = gateB(dz)
-
-        # if hasattr(self, 'magnitude') and name in self.magnitude:
-        #     dz_norm = dz.norm(p=2, dim=-1, keepdim=True).detach() + 1e-8
-        #     dz = self.magnitude[name] * (dz / dz_norm)
-
-        if self.use_dora:
+            weight = dequantize_module_weight(self.base_layer).to(x.dtype)
+            weight_norm = self.get_weight_norm(weight, lora_weight.detach(), scale).detach()
+            mag_norm_scale = (self.magnitude[name] / weight_norm).view(1, -1).to(y.dtype)
             if self.base_layer.bias is not None:
                 y = y - self.base_layer.bias
+            return mag_norm_scale * y + mag_norm_scale * dz.to(y.dtype) * scale
 
-            # print("mag_norm_scale = ", mag_norm_scale.max(), mag_norm_scale.min())
-
-            return  mag_norm_scale  * y + mag_norm_scale * dz * scale
-
-        dz = self.magnitude[name] * dz
-
+        # Plain (non-DoRA) LeNA path: frozen output + scaled nonlinear low-rank delta.
         return y + dz * scale
 
+    def _gate_value(self, gate: nn.Module, z: torch.Tensor) -> Optional[torch.Tensor]:
+        """Return the selection gate g in [0,1] broadcastable to z, or None (always-on)."""
+        if isinstance(gate, nn.Identity):
+            return None
+        return gate.value(z)
 
+
+# ---------------------------------------------------------------------------
+# Model-level utilities for the selection gate: L1 sparsity penalty (training)
+# and a per-module openness report (the "where is nonlinearity used" analysis).
+# ---------------------------------------------------------------------------
+def lena_gate_l1(model: nn.Module, adapter_name: Optional[str] = None) -> Optional[torch.Tensor]:
+    """Mean gate openness E[g] over all LeNALinear selection gates.
+
+    Add `lambda * lena_gate_l1(model)` to the training loss to encourage most
+    locations to stay linear (LoRA), so nonlinearity is spent only where it helps.
+    Returns None if no active (materialized) gates exist yet.
+    """
+    total = None
+    count = 0
+    for m in model.modules():
+        if not isinstance(m, LeNALinear):
+            continue
+        gates = m.gate.items() if adapter_name is None else [(adapter_name, m.gate.get(adapter_name))]
+        for _, g in gates:
+            if isinstance(g, Gate):
+                o = g.openness()
+                if o is not None:
+                    s = o.sum()
+                    total = s if total is None else total + s
+                    count += o.numel()
+    if total is None or count == 0:
+        return None
+    return total / count
+
+
+def lena_gate_report(model: nn.Module) -> Dict[str, float]:
+    """Map module_key -> mean gate openness in [0,1]. Feed to a heatmap to show
+    which layers/positions opened the nonlinear path."""
+    report: Dict[str, float] = {}
+    for m in model.modules():
+        if not isinstance(m, LeNALinear):
+            continue
+        for name, g in m.gate.items():
+            if isinstance(g, Gate):
+                o = g.openness()
+                if o is not None:
+                    report[f"{m.module_key}::{name}"] = float(o.mean().detach())
+    return report
