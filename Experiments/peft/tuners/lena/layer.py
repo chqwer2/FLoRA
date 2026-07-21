@@ -276,7 +276,14 @@ class LeNALinear(nn.Module):
             h = z  # pure LoRA path (no nonlinearity requested)
         else:
             # Input conditioning for phi (does NOT touch the linear skip below).
-            zc = self.norm_before_act[name](z) if self.use_norm_before_act else z
+            # Under fp16 autocast A's output comes back Half while the norm keeps fp32
+            # params, and CUDA layer_norm does not promote for us -> run it in the norm's
+            # own dtype and hand phi back a tensor shaped like z.
+            if self.use_norm_before_act:
+                norm = self.norm_before_act[name]
+                zc = norm(z.to(norm.weight.dtype)).to(z.dtype)
+            else:
+                zc = z
             z_hwc, _, orig_ndim = _to_hwc(zc)
             # Custom ops (LayerNorm/spline) may upcast to float32 under autocast; keep the
             # whole interpolation in z's dtype so B(h) matches its weights (fp16/bf16).
