@@ -842,6 +842,9 @@ def train_one_run(
     val_set_size: int,
     seed: int = 42,
     max_train_samples: int = 0,
+    lena_norm_mode: str = "token",
+    act_lr_mult: float = 1.0,
+    gate_lr_mult: float = 1.0,
     quantize: bool = False,
     eval_step: int = 10,
     save_step: int,
@@ -942,6 +945,7 @@ def train_one_run(
         gate_strength=gate_strength,
         lena_use_dora=lena_use_dora,
         lena_norm_before_act=lena_norm_before_act,
+        lena_norm_mode=lena_norm_mode,
         lena_gate_init=lena_gate_init,
     )
 
@@ -1081,8 +1085,8 @@ def train_one_run(
     optimizer = build_grouped_optimizer(
         model,
         base_lr=training_args.learning_rate,
-        act_lr_mult=0.1,  # start conservative
-        gate_lr_mult=0.5,
+        act_lr_mult=act_lr_mult,
+        gate_lr_mult=gate_lr_mult,
         weight_decay=training_args.weight_decay,
         betas=(0.9, 0.95),
         eps=1e-8,
@@ -1440,6 +1444,15 @@ if __name__ == "__main__":
     parser.add_argument("--num_epochs", type=int, default=1)
     parser.add_argument("--learning_rate", type=float, default=3e-4)
     parser.add_argument("--cutoff_len", type=int, default=512)
+    parser.add_argument("--lena_norm_mode", type=str, default="token",
+                        choices=["token", "shared"],
+                        help="'token': per-token LayerNorm before phi. 'shared': one running "
+                             "scalar, which keeps per-token magnitude (see SharedRMS)")
+    parser.add_argument("--act_lr_mult", type=float, default=1.0,
+                        help="activation LR = learning_rate * this (measured act grads are ~1e3x "
+                             "smaller than B's, so the old hardcoded 0.1 starved them)")
+    parser.add_argument("--gate_lr_mult", type=float, default=1.0,
+                        help="gate LR = learning_rate * this")
     parser.add_argument("--seed", type=int, default=42,
                         help="run seed; controls data split/shuffle and Trainer init (report >=3 seeds)")
     parser.add_argument("--max_train_samples", type=int, default=0,
@@ -1536,5 +1549,8 @@ if __name__ == "__main__":
         lena_use_dora=args.lena_use_dora,
         lena_gate_l1_coef=args.lena_gate_l1,
         lena_norm_before_act=args.lena_norm_before_act,
+        lena_norm_mode=args.lena_norm_mode,
+        act_lr_mult=args.act_lr_mult,
+        gate_lr_mult=args.gate_lr_mult,
         lena_gate_init=args.lena_gate_init,
     )

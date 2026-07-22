@@ -20,6 +20,32 @@ from peft.utils.integrations import dequantize_module_weight, gather_params_ctx
 from peft.utils.other import transpose
 
 
+class SharedRMS(nn.Module):
+    """Divide the code by ONE running scalar, shared over tokens and channels.
+
+    The point of normalizing before phi is only to land the code inside the spline's
+    knot range. A per-token LayerNorm does that but also forces every token's code to
+    the same norm, which (a) moves the initial function far away from LoRA even when
+    phi is identity-initialized, (b) inflates B's gradient enough to trip global grad
+    clipping every step -- which then scales *everything* down and starves the
+    activation and gate of updates -- and (c) deletes the per-token magnitude that the
+    input-conditional story depends on. A single shared scalar fixes the range without
+    touching the relative magnitudes.
+    """
+
+    def __init__(self, momentum: float = 0.01, eps: float = 1e-5, init: float = 1.0):
+        super().__init__()
+        self.momentum = float(momentum)
+        self.eps = float(eps)
+        self.register_buffer("rms", torch.tensor(float(init)))
+
+    def forward(self, z: torch.Tensor) -> torch.Tensor:
+        if self.training:
+            cur = z.detach().float().pow(2).mean().sqrt().clamp_min(self.eps)
+            self.rms.mul_(1.0 - self.momentum).add_(self.momentum * cur)
+        return z / (self.rms.to(z.dtype) + self.eps)
+
+
 def _to_hwc(z: torch.Tensor) -> Tuple[torch.Tensor, Tuple[int, int, int], int]:
     orig_ndim = z.ndim
     if z.ndim >= 4:
@@ -158,7 +184,15 @@ class LeNALinear(nn.Module):
         lena_nonlinear_scale = 1.0
         self.scaling[adapter_name] = float(cfg.lora_alpha) / float(r) * lena_nonlinear_scale
 
-        self.norm_before_act[adapter_name] = nn.LayerNorm(r)
+        # "token" = per-token LayerNorm (original); "shared" = one running scalar that
+        # keeps relative token magnitudes. See SharedRMS for why the difference matters.
+        norm_mode = str(getattr(cfg, "lena_norm_mode", "token")).lower()
+        if norm_mode == "shared":
+            self.norm_before_act[adapter_name] = SharedRMS()
+        elif norm_mode == "token":
+            self.norm_before_act[adapter_name] = nn.LayerNorm(r)
+        else:
+            raise ValueError(f"lena_norm_mode must be 'token' or 'shared', got {norm_mode!r}")
 
         # activation (can be identity). Built in RAW mode: the layer's selection gate
         # (below) does the linear<->nonlinear interpolation, so activations no longer
@@ -303,7 +337,8 @@ class LeNALinear(nn.Module):
             # own dtype and hand phi back a tensor shaped like z.
             if self.use_norm_before_act:
                 norm = self.norm_before_act[name]
-                zc = norm(z.to(norm.weight.dtype)).to(z.dtype)
+                nw = getattr(norm, "weight", None)
+                zc = (norm(z.to(nw.dtype)).to(z.dtype) if nw is not None else norm(z))
             else:
                 zc = z
             z_hwc, _, orig_ndim = _to_hwc(zc)

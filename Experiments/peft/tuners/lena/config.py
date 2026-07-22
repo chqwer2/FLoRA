@@ -47,6 +47,9 @@ class LeNAConfig(LoraConfig):
     # stay in-range and are insensitive to init scale. The linear skip still uses the
     # raw z, so the exact LoRA fallback (gate closed) is preserved.
     lena_norm_before_act: bool = False
+    # "token": per-token LayerNorm. "shared": one running scalar (keeps per-token
+    # magnitude, which the input-conditional claim depends on).
+    lena_norm_mode: str = "token"
 
     # ---- DEBUG ----
     lena_debug: bool = False                 # enable debug logging
