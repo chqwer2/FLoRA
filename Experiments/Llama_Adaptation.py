@@ -557,6 +557,7 @@ def build_peft_config(
     gate_strength="hard",
     lena_use_dora: bool = False,
     lena_norm_before_act: bool = False,
+    lena_norm_mode: str = "token",
     lena_gate_init: float = -2.0,
 ):
     method = method.lower()
@@ -589,6 +590,7 @@ def build_peft_config(
             gate_strength=gate_strength,
             lena_use_dora=lena_use_dora,
             lena_norm_before_act=lena_norm_before_act,
+            lena_norm_mode=lena_norm_mode,
             lena_gate_init=lena_gate_init,
         )
 
