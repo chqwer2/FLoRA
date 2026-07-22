@@ -327,12 +327,44 @@ def format_example_to_text(data_path: str, ex: Dict[str, Any]) -> str:
     return "### Example\n" + json.dumps(ex, ensure_ascii=False, default=str)
 
 
-def add_text_column(dataset: DatasetDict, data_path: str) -> DatasetDict:
+def format_example_variant(data_path: str, ex: Dict[str, Any], variant: str = "letter") -> str:
+    """Re-target the OUTPUT of an example without changing its content.
+
+    All eight commonsense sets share one output mapping ("emit a letter"), so a single
+    linear low-rank update serves every input and an input-conditional update has
+    nothing to earn -- which is what we measured (the learned nonlinear amplitude
+    collapses to ~0, and rank 4 vs 16 differ by 0.0045 answer accuracy). Mixing
+    variants keeps the content and the difficulty fixed while forcing the adapter to
+    implement several conflicting input->output maps at once, which is the regime the
+    "input-conditional mixture of low-rank updates" claim is actually about.
+
+      letter    : "Answer: A"                 (the standard protocol)
+      text      : "Answer: <the option text>"  (free-form, no letter)
+      textfirst : the option text, then the letter (inverted order)
+    """
+    full = format_example_to_text(data_path, ex)
+    if variant == "letter":
+        return full
+    head, sep, tail = full.partition("Answer: ")
+    if not sep:
+        return full
+    letter, _, gold_text = tail.partition("\n")
+    gold_text = gold_text.strip()
+    if not gold_text:
+        gold_text = letter.strip()
+    if variant == "text":
+        return f"{head}Answer: {gold_text}"
+    if variant == "textfirst":
+        return f"{head}Answer: {gold_text}\nOption: {letter.strip()}"
+    raise ValueError(f"unknown dataset variant {variant!r} (letter|text|textfirst)")
+
+
+def add_text_column(dataset: DatasetDict, data_path: str, variant: str = "letter") -> DatasetDict:
     """
     Ensure every split has a 'text' column.
     """
     def _mapper(ex):
-        return {"text": format_example_to_text(data_path, ex)}
+        return {"text": format_example_variant(data_path, ex, variant=variant)}
 
     out = {}
     for split_name, split_ds in dataset.items():
@@ -361,18 +393,29 @@ from datasets import concatenate_datasets
 
 def parse_dataset_spec(spec: str) -> Tuple[str, Optional[str], str]:
     """
-    spec: "path" or "path:config"
+    spec: "path" | "path:config" | "path@variant" | "path:config@variant"
     returns: (path, config_or_None, display_name)
+
+    The @variant suffix selects the OUTPUT FORMAT the model must produce for that
+    copy of the dataset (see format_example_to_text). Mixing several variants of the
+    same data creates genuine task conflict -- identical inputs demanding different
+    output mappings -- with no difference in content or difficulty, which is the
+    controlled way to ask whether an input-conditional update earns its keep.
     """
     spec = spec.strip()
+    variant = "letter"
+    if "@" in spec:
+        spec, variant = spec.rsplit("@", 1)
+        spec, variant = spec.strip(), variant.strip()
     if ":" in spec:
         path, cfg = spec.split(":", 1)
         path, cfg = path.strip(), cfg.strip()
-        display = f"{path}:{cfg}"
+        display = f"{path}:{cfg}" + (f"@{variant}" if variant != "letter" else "")
         return path, cfg, display
     else:
         path = spec
-        return path, None, path
+        display = path + (f"@{variant}" if variant != "letter" else "")
+        return path, None, display
 
 
 def load_tokenize_one(
@@ -385,6 +428,7 @@ def load_tokenize_one(
     val_set_size: int,
     cache_dir: str,
     seed: int = 42,
+    variant: str = "letter",
 ) -> DatasetDict:
 
     # Load. Several of the commonsense sets (piqa, hellaswag, winogrande, social_i_qa,
@@ -404,6 +448,7 @@ def load_tokenize_one(
         cutoff_len=cutoff_len,
         val_set_size=val_set_size,
         seed=seed,
+        variant=variant,
     )
     return tok
 
@@ -411,12 +456,12 @@ def load_tokenize_one(
 # -------------------------
 # Fixed-length tokenization + split
 # -------------------------
-def tokenize_and_split(dataset: DatasetDict, data_path: str, tokenizer, cutoff_len: int, val_set_size: int, seed: int = 42):
+def tokenize_and_split(dataset: DatasetDict, data_path: str, tokenizer, cutoff_len: int, val_set_size: int, seed: int = 42, variant: str = "letter"):
     dataset = normalize_splits(dataset)
 
     # build "text" if missing
     if "text" not in dataset["train"].column_names:
-        dataset = add_text_column(dataset, data_path=data_path)
+        dataset = add_text_column(dataset, data_path=data_path, variant=variant)
 
     def tokenize_function(examples):
         out = tokenizer(
@@ -1014,9 +1059,11 @@ def train_one_run(
         dp, dn, display = parse_dataset_spec(spec)
         print(f"\n[DATA] Loading: {display}, {dp}, {dn}")
 
+        variant = display.split("@", 1)[1] if "@" in display else "letter"
         tok = load_tokenize_one(
             data_path=dp,
             data_name=dn,
+            variant=variant,
             tokenizer=tokenizer,
             cutoff_len=cutoff_len,
             val_set_size=val_set_size,
