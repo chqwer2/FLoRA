@@ -719,8 +719,9 @@ def debug_trainables(model, method: str, topn_layers: int = 10):
             hasA = hasattr(layer, "A") and len(getattr(layer, "A", {})) > 0
             hasB = hasattr(layer, "B") and len(getattr(layer, "B", {})) > 0
             hasAct = hasattr(layer, "act") and len(getattr(layer, "act", {})) > 0
-            hasGA = hasattr(layer, "gate_after_a") and len(getattr(layer, "gate_after_a", {})) > 0
-            hasGB = hasattr(layer, "gate_after_b") and len(getattr(layer, "gate_after_b", {})) > 0
+            # single unified selection gate (the old gate_after_a/gate_after_b pair is gone)
+            hasGA = hasattr(layer, "gate") and len(getattr(layer, "gate", {})) > 0
+            hasGB = False
 
             cnt["has_A"] += int(hasA)
             cnt["has_B"] += int(hasB)
@@ -742,11 +743,7 @@ def debug_trainables(model, method: str, topn_layers: int = 10):
                     for p in mod.parameters():
                         if p.requires_grad: cnt["trainable_act_params"] += p.numel()
             if hasGA:
-                for _, mod in layer.gate_after_a.items():
-                    for p in getattr(mod, "parameters", lambda: [])():
-                        if p.requires_grad: cnt["trainable_gate_params"] += p.numel()
-            if hasGB:
-                for _, mod in layer.gate_after_b.items():
+                for _, mod in layer.gate.items():
                     for p in getattr(mod, "parameters", lambda: [])():
                         if p.requires_grad: cnt["trainable_gate_params"] += p.numel()
 

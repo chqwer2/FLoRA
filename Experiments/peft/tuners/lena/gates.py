@@ -31,6 +31,7 @@ class Gate(nn.Module):
         init: float,
         dtype: torch.dtype,
         device: torch.device,
+        code_dim: Optional[int] = None,
     ):
         super().__init__()
         self.gate_type = gate_type
@@ -40,16 +41,38 @@ class Gate(nn.Module):
         self.dtype = dtype
         self.device = device
 
-        # lazily initialized
         self.param: Optional[nn.Parameter] = None
 
         if gate_type == "none":
             return
 
+        # The parameter MUST exist before the optimizer is built, otherwise the gate is
+        # silently frozen at its init value and 'learn where nonlinearity is needed'
+        # (plus the gate-L1 sparsity penalty) does nothing at all. Both shapes that do
+        # not depend on the input sequence length are therefore built eagerly here.
+        if gate_mode == "global":
+            self.param = nn.Parameter(torch.full((1,), self.init, dtype=dtype, device=device))
+        elif gate_mode == "channel":
+            if code_dim is None:
+                raise ValueError("Gate(gate_mode='channel') needs code_dim (the rank r)")
+            self.param = nn.Parameter(
+                torch.full((int(code_dim),), self.init, dtype=dtype, device=device)
+            )
+        else:
+            # 'spatial'/'voxel' are sized by the token count, which is not known until the
+            # first forward -- i.e. after the optimizer exists. Refuse instead of training
+            # a gate that never receives an update.
+            raise ValueError(
+                f"gate_mode={gate_mode!r} is sized by sequence length and cannot be "
+                "registered before the optimizer is built; use 'global' or 'channel'."
+            )
+
     # -------------------------
     # lazy initialization
     # -------------------------
     def _init_param_from_x(self, x: torch.Tensor):
+        # Kept only as a safety net: every supported gate_mode is now built eagerly in
+        # __init__ so the parameter reaches the optimizer.
         if self.param is not None:
             return
         self.device = x.device

@@ -209,6 +209,7 @@ class LeNALinear(nn.Module):
                 dtype=A.weight.dtype,
                 device=A.weight.device,
                 gate_strength=gate_strength,
+                code_dim=r,
             )
         else:
             self.gate[adapter_name] = nn.Identity()  # None gate == always-on nonlinearity (g=1)
