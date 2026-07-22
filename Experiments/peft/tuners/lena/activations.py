@@ -644,6 +644,54 @@ class FlexTanhRes(nn.Module):
         return x + self.a * torch.tanh(self.b * x)
 
 
+class FlexRankMix(nn.Module):
+    """h = z * (1 + a * tanh(W z + b)) -- conditional mixing ACROSS ranks.
+
+    Every nonlinear-LoRA method we compete with (AuroRA, CeRA, AFA-LoRA, LoRAN, and
+    the activation-adaptation line) applies phi ELEMENTWISE. An elementwise phi can
+    reshape each coordinate of the code independently, but it can never change the
+    relative weighting of the rank-1 components of B A, because phi(z)_i depends only
+    on z_i. The "input-conditional mixture of low-rank updates" the method claims is
+    therefore out of reach of an elementwise nonlinearity by construction -- which is
+    consistent with this project's own CPU probe, where a bilinear adapter reached
+    family_rank 10.5 against the spline's 4.
+
+    Here the scaling applied to rank i is a function of ALL ranks, so each token gets
+    a different combination of the rank-1 directions: literally a mixture of LoRAs.
+
+    a is initialized to 0, so phi is EXACTLY the identity at init and the adapter
+    starts as exact LoRA. Costs r^2 + 2r parameters per module (24 at r=4).
+    """
+
+    kind = "rankmix"
+
+    def __init__(self, mode: FlexMode, a_init: float = 0.0, w_init: float = 0.02,
+                 max_h: Optional[int] = None, max_w: Optional[int] = None,
+                 use_gate: str = "none"):
+        super().__init__()
+        self.mode = mode
+        self.a_init = float(a_init)
+        self.w_init = float(w_init)
+        self.use_gate = use_gate
+        self.a: Optional[nn.Parameter] = None
+        self.W: Optional[nn.Parameter] = None
+        self.b: Optional[nn.Parameter] = None
+
+    def _maybe_init(self, x: torch.Tensor):
+        if self.a is not None:
+            return
+        C = int(x.shape[-1])
+        self.a = nn.Parameter(torch.full((C,), self.a_init, dtype=x.dtype, device=x.device))
+        # small random W: a zero W would make tanh(Wz)=0 and leave a with no signal
+        self.W = nn.Parameter(torch.randn(C, C, dtype=x.dtype, device=x.device) * self.w_init)
+        self.b = nn.Parameter(torch.zeros(C, dtype=x.dtype, device=x.device))
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        self._maybe_init(x)
+        mix = torch.tanh(torch.matmul(x, self.W.transpose(0, 1)) + self.b)
+        return x * (1.0 + self.a * mix)
+
+
 def make_lena_activation(kind: ActKind, mode: FlexMode, **kwargs: Any) -> nn.Module:
     k = str(kind).lower()
     if k == "identity":
@@ -663,6 +711,9 @@ def make_lena_activation(kind: ActKind, mode: FlexMode, **kwargs: Any) -> nn.Mod
     elif k == "tanhres":
         kwargs.pop("use_gate", None)
         act = FlexTanhRes(mode=mode, **kwargs)
+    elif k == "rankmix":
+        kwargs.pop("use_gate", None)
+        act = FlexRankMix(mode=mode, **kwargs)
     else:
         raise ValueError(f"Unknown lena activation kind: {kind}")
 
