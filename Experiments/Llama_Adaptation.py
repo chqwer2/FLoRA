@@ -317,6 +317,52 @@ def format_example_to_text(data_path: str, ex: Dict[str, Any]) -> str:
             f"{correct}"
         )
 
+    # ---- openai/gsm8k ----
+    # Output space: a reasoning chain ending in a number. Incompatible with "emit a
+    # letter": the adapter cannot serve both with one direction of update.
+    if dp.startswith("openai/gsm8k") or dp == "gsm8k":
+        q = ex.get("question", "")
+        a = str(ex.get("answer", ""))
+        return (
+            "### Task: Solve the math problem. End with '#### <number>'.\n\n"
+            f"Question: {q}\n\n"
+            f"Answer: {a}"
+        )
+
+    # ---- rajpurkar/squad ----
+    # Output space: a span copied out of the context.
+    if dp.startswith("rajpurkar/squad") or dp == "squad":
+        answers = ex.get("answers", {}) or {}
+        texts = answers.get("text", []) if isinstance(answers, dict) else []
+        gold = texts[0] if texts else ""
+        return (
+            "### Task: Answer the question using a span from the passage.\n\n"
+            f"Passage:\n{ex.get('context','')}\n\n"
+            f"Question: {ex.get('question','')}\n\n"
+            f"Answer: {gold}"
+        )
+
+    # ---- nyu-mll/glue (mnli / sst2) ----
+    # Output space: a label from a DIFFERENT label set than the commonsense sets.
+    if dp.startswith("nyu-mll/glue") or dp == "glue":
+        if "premise" in ex and "hypothesis" in ex:          # MNLI
+            names = {0: "entailment", 1: "neutral", 2: "contradiction"}
+            lab = names.get(int(ex.get("label", -1)), "")
+            return (
+                "### Task: Does the premise entail the hypothesis?\n"
+                "Reply with entailment, neutral or contradiction.\n\n"
+                f"Premise: {ex['premise']}\n"
+                f"Hypothesis: {ex['hypothesis']}\n\n"
+                f"Answer: {lab}"
+            )
+        if "sentence" in ex:                                 # SST-2
+            lab = {0: "negative", 1: "positive"}.get(int(ex.get("label", -1)), "")
+            return (
+                "### Task: Is the sentiment of the sentence positive or negative?\n\n"
+                f"Sentence: {ex['sentence']}\n\n"
+                f"Answer: {lab}"
+            )
+
     # ---- fallback ----
     # If you pass a dataset that already has "text", use it
     if "text" in ex and isinstance(ex["text"], str):
