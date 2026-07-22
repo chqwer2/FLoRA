@@ -355,11 +355,14 @@ def load_tokenize_one(
     cache_dir: str,
 ) -> DatasetDict:
 
-    # Load
+    # Load. Several of the commonsense sets (piqa, hellaswag, winogrande, social_i_qa,
+    # ...) are still script-based on the Hub, so newer `datasets` refuses them without
+    # an explicit opt-in to running the loading script.
     if data_name and data_name.strip():
-        ds = load_dataset(data_path, data_name.strip(), cache_dir=cache_dir)
+        ds = load_dataset(data_path, data_name.strip(), cache_dir=cache_dir,
+                          trust_remote_code=True)
     else:
-        ds = load_dataset(data_path, cache_dir=cache_dir)
+        ds = load_dataset(data_path, cache_dir=cache_dir, trust_remote_code=True)
 
     # Tokenize/split -> returns DatasetDict with train/test
     tok = tokenize_and_split(
