@@ -112,16 +112,75 @@ All in `Experiments/`:
 - **Cost note:** 4090 GPU is billing while on. `shutdown` via SSH stops GPU billing; power-on/release = console.
 
 ### Memory
-Project memory: `/Users/haochen/.claude/projects/-Users-haochen-Documents-GitHub-FLoRA/memory/`
-(`MEMORY.md`, `kelvin2-setup.md`).
+Project memory (current machine): `~/.claude/projects/-media-cbtil3-WhiteSD-LeNA/memory/`.
+Older mac-era memory lived at `/Users/haochen/.claude/projects/-Users-haochen-Documents-GitHub-FLoRA/memory/`.
 
-## 6. Current job state
+### Access from the CB box (2026-07-22)
+- **Kelvin2**: `ssh kelvin` via `~/.ssh/config` (port 55890, user `hchen`, `~/.ssh/id_ed25519`).
+  Key auth passes but a **2FA second factor** remains, so the USER must open the ControlMaster once:
+  `ssh -fN -o ControlMaster=yes -o ControlPersist=8h -o ControlPath=~/.ssh/cm-kelvin kelvin`.
+- **AutoDL**: no sshpass/expect here, but `/usr/bin/python3` has **paramiko** -- drive it with a small
+  wrapper. `ssh -p 34223 root@connect.westb.seetacloud.com`. The GPU is a **48G 4090**, not 24G.
+- The `huggingface_hub` client **hangs** against hf-mirror on that box and crawls at ~1.3MB/s through
+  `/etc/network_turbo`. Direct `curl` from `https://hf-mirror.com/<repo>/resolve/main/<file>` with the
+  token as a bearer header gets 8-14MB/s -- pull into a plain dir and pass it as `--base_model`
+  (`/root/autodl-tmp/llama2-7b`). Datasets still need `/etc/network_turbo` sourced.
+- Two traps that each cost a cycle: `pkill -f <pat>` over SSH kills your own remote shell when the
+  pattern appears in the command you sent; and SFTP-overwriting a *currently running* shell script
+  makes bash execute garbage (it re-reads by byte offset).
 
-- **Smoke job 9442255** (fp16-fix version) queued on Kelvin2 multi-partition (`PD/Resources`). Prior
-  smokes found+fixed: (1) mixed-precision dtype bug at `B(h)`, (2) fp32-load OOM on 32G. Expect this
-  one to PASS. Check: `ssh -o ControlPath=~/.ssh/cm-kelvin kelvin 'sacct -j 9442255 --format=State,ExitCode -n; tail -30 /mnt/scratch2/users/hchen/logs/lena_smoke_9442255.log'`
-  Look for: `token_acc`, `SMOKE_EXIT=0`, `LeNA where-map ... fraction 'open'`.
-- Smoke sbatch template: `/mnt/scratch2/users/hchen/slurm/lena_smoke.sh`.
+## 6. Current job state  (updated 2026-07-22, working from the CB Linux box)
+
+**Working machine changed.** Work now happens on `cbtil3-Precision-5820-Tower` at
+`/media/cbtil3/WhiteSD/LeNA` (2x RTX A5000 24G, used ONLY for unit tests -- the user asked that
+experiments stay on the two clusters). Access details and SSH/download traps are in the project
+memory at `~/.claude/projects/-media-cbtil3-WhiteSD-LeNA/memory/`.
+
+### Six bugs found and fixed (4 of them SILENT -- they produced numbers, just wrong ones)
+
+1. **fp16/fp32 crash** in `layer.py`: the A projection's input was never cast. This is what killed
+   every earlier smoke run.
+2. **LayerNorm crash under autocast**: autocast returns Half from A's Linear even with fp32 weights
+   and CUDA `layer_norm` does not promote, so the fp32 norm params blew up.
+3. **The selection gate was never trained.** `Gate.param` was created lazily on the first forward,
+   i.e. after the optimizer was built, so it stayed pinned at its init value and `--lena_gate_l1`
+   penalized a frozen tensor. This voids the paper's central claim ("nonlinearity is needed only at
+   a sparse *learnable* set of locations"). A stale diagnostic that still counted the long-removed
+   `gate_after_a/gate_after_b` printed "gate=0" and hid it. Now `gate=160` on the real 7B.
+4. **Trained adapters were never saved**: `adapter_model.safetensors` was 40 bytes / zero tensors,
+   because PEFT selects by the registered prefix `"lena_"` and no LeNA parameter is named that way.
+   Loading was broken too (`LeNAConfig` redeclared `peft_type` as an `init=False` field).
+5. **LeNA-D was not DoRA**: `set_trainable_only_lena` never unfroze `magnitude`, so the DoRA
+   magnitude stayed at init -- a fixed rescale. Exactly the variable E2 exists to measure.
+6. **Dataset loading**: bare `piqa` no longer resolves and the commonsense sets are script-based;
+   need `ybisk/piqa` + `trust_remote_code=True`. All 8 sets verified loadable (147,580 train rows).
+
+**Consequence: every pre-2026-07-22 LeNA number is void** -- they were produced with a frozen gate
+and a frozen magnitude. That plausibly explains the marginal +0.5-1.5 gains: the mechanism was not
+learning.
+
+### New capabilities
+- `--seed` (split/shuffle/Trainer were all hardcoded to 42, so ">=3 seeds +/- std" was not even
+  expressible) and `--max_train_samples` (caps the combined train set; the full 8-set is ~40h/config).
+- `Experiments/tests/test_lena_dtype.py` -- 22 cases: fp16 base + fp32 trainables + autocast across
+  every activation x DoRA x norm, plus "gate param must be in named_parameters() BEFORE any forward".
+- `Experiments/tests/test_lena_save_load.py` -- full save -> from_pretrained round trip.
+- `Experiments/analyze_runs.py` -- builds the comparison table: measured param counts (read from
+  safetensors, so "matched params" is measured not claimed), per-dataset accuracy, mean +/- std
+  across seeds, and gate %open.
+
+**Params ARE matched**: at r=16 LeNA trains 28,090,528 vs LoRA's 28,049,408 -- **+0.15%**
+(act 40,960 + gate 160). The reviewers' "different param counts => invalid comparison" is answerable.
+
+### Running now
+- **Kelvin2**: `lena_e1` (array 0-7: lora/lena x r in {4,8,16,32}, 8-set, `--max_train_samples 20000`,
+  3 epochs, seed 1) and `lena_e3` (array 0-3: gate_l1 in {0,3e-4,1e-3,3e-3} at r=16). ~5.6h/job on a
+  V100. Scripts: `/mnt/scratch2/users/hchen/slurm/lena_e1.sh`, `lena_e3.sh`.
+- **AutoDL**: `chain5.sh` -> `run_e2.sh`, the DoRA-decouple ablation (LoRA / DoRA / LeNA / LeNA-D on
+  boolq+piqa, r=16). LoRA done: boolq 0.7456, piqa 0.7524, **avg 0.7490**, 28,049,408 params.
+  DoRA is ~3x slower per step than LoRA (it recomputes weight norms), so budget ~25h for all four.
+- **Strategy**: one seed first to find WHERE the rank/param gap opens, then 3 seeds at that rank --
+  not 24 jobs up front.
 
 ## 7. Experiment plan (the goal — both clusters, different tasks)
 
