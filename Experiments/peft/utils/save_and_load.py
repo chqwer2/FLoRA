@@ -481,6 +481,40 @@ def set_peft_model_state_dict(
         peft_model_state_dict = state_dict
     elif config.peft_type == PeftType.XLORA:
         peft_model_state_dict = state_dict
+    elif config.peft_type == PeftType.LENA:
+        # Saving strips ".<adapter_name>" from every key, and the generic branch below
+        # puts it back using the registered prefix -- which for LeNA is "lena_", a
+        # string that appears in none of its parameter names (lora_A/lora_B, act, gate,
+        # norm_before_act, magnitude). The keys therefore never matched, and
+        # load_state_dict(strict=False) discarded the entire adapter in silence: a
+        # reloaded LeNA model scored 0.4463 against a frozen-base 0.4444, i.e. it was
+        # inert, while the same checkpoint's LoRA counterpart scored 0.7489.
+        #
+        # Derive the mapping from the model itself rather than guessing where the
+        # adapter name belongs: for each of the model's own parameters, strip the
+        # adapter name the same way saving does, and map that back.
+        peft_model_state_dict = {}
+        saved_to_model = {}
+        for name, _ in model.named_parameters():
+            stripped = name.replace(f".{adapter_name}.", ".")
+            if stripped.endswith(f".{adapter_name}"):
+                stripped = stripped[: -len(adapter_name) - 1]
+            saved_to_model[stripped] = name
+        missed = 0
+        for k, v in state_dict.items():
+            target = saved_to_model.get(k)
+            if target is None:
+                missed += 1
+                continue
+            peft_model_state_dict[target] = v
+        if state_dict and not peft_model_state_dict:
+            raise ValueError(
+                "No LeNA adapter key matched the model; refusing to load an adapter "
+                "that would silently have no effect."
+            )
+        if missed:
+            warnings.warn(f"{missed} LeNA adapter keys had no counterpart in the model")
+
     elif config.peft_type in PEFT_TYPE_TO_PREFIX_MAPPING:
         peft_model_state_dict = {}
         parameter_prefix = PEFT_TYPE_TO_PREFIX_MAPPING[config.peft_type]
