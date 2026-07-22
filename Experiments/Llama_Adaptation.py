@@ -1164,7 +1164,10 @@ def train_one_run(
         logging_steps=eval_step,
         save_steps=save_step,
         save_total_limit=2,
-        gradient_accumulation_steps=16,
+        # Keep the effective batch at 16 while letting the GPU actually be used:
+        # batch_size=1 x accum=16 runs sixteen serial forward/backward passes per
+        # optimizer step, which is 4-6x slower in wall clock for identical math.
+        gradient_accumulation_steps=max(1, 16 // max(1, batch_size)),
         eval_accumulation_steps=8,
         fp16=(device.type == "cuda"),
         bf16=False, #(device.type == "cuda" and torch.cuda.is_bf16_supported()),
