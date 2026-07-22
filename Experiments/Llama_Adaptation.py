@@ -449,6 +449,16 @@ def set_trainable_only_lena(model):
                 for p in d.parameters(recurse=True):
                     p.requires_grad = True
 
+        # LeNA-D only *is* DoRA if the magnitude vector adapts; leaving it frozen turns
+        # the variant into a fixed rescale and makes the DoRA-decouple ablation
+        # meaningless. It stays frozen (and unused) when use_dora is off, so the plain
+        # LeNA path keeps its LoRA-matched parameter count.
+        if getattr(mod, "use_dora", False):
+            mag = getattr(mod, "magnitude", None)
+            if mag is not None:
+                for p in mag.parameters(recurse=True):
+                    p.requires_grad = True
+
     return model
 
 
