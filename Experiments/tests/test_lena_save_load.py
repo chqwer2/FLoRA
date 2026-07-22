@@ -70,6 +70,21 @@ def main():
         with torch.no_grad():
             got = reloaded(ids).logits
 
+        # and again with the base already on GPU: LeNA built its submodules on the CPU
+        # and never moved them, so loading a trained adapter onto a GPU model died on
+        # the first A(x). Training hid it (a later model.to(device) swept up) and a
+        # CPU-only round trip could not see it, so every evaluation of a trained LeNA
+        # adapter failed until this was caught.
+        if torch.cuda.is_available():
+            gpu_model = PeftModel.from_pretrained(build_base().cuda(), tmp)
+            gpu_model.eval()
+            devs = {p.device.type for p in gpu_model.parameters()}
+            assert devs == {"cuda"}, f"adapter not fully on GPU: {devs}"
+            with torch.no_grad():
+                got_gpu = gpu_model(ids.cuda()).logits.cpu()
+            assert (expected - got_gpu).abs().max().item() < 1e-3, "GPU reload mismatch"
+            print("GPU reload OK")
+
     max_diff = (expected - got).abs().max().item()
     print(f"max |logit diff| after reload = {max_diff:.2e}")
     assert max_diff < 1e-4, f"reloaded adapter does not reproduce the saved model ({max_diff:.2e})"

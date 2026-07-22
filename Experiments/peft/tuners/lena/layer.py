@@ -279,6 +279,20 @@ class LeNALinear(nn.Module):
         }
         self._forward_logged[adapter_name] = False
 
+        # Every submodule above was constructed on the CPU. Upstream PEFT moves newly
+        # injected LoRA modules onto the base layer's device; LeNA never did, so
+        # loading a trained adapter onto a GPU model died on the first A(x) with
+        # "found at least two devices, cuda:0 and cpu". Training happened to survive
+        # because a later model.to(device) swept everything up, and the save/load test
+        # ran entirely on CPU -- so this only ever showed up at evaluation time.
+        base_w = getattr(self.base_layer, "weight", None)
+        if base_w is not None:
+            for mod in (self.lora_A[adapter_name], self.lora_B[adapter_name],
+                        self.act[adapter_name], self.gate[adapter_name],
+                        self.norm_before_act[adapter_name]):
+                mod.to(device=base_w.device)
+            self.magnitude[adapter_name].data = self.magnitude[adapter_name].data.to(base_w.device)
+
         if self._active_adapter is None:
             self._active_adapter = adapter_name
 
