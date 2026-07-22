@@ -520,7 +520,9 @@ def tokenize_and_split(dataset: DatasetDict, data_path: str, tokenizer, cutoff_l
             truncation=True,
             max_length=cutoff_len,
         )
-        out["labels"] = out["input_ids"].copy()
+        # Deliberately no "labels" here. DataCollatorForLanguageModeling builds them
+        # from input_ids AFTER padding and masks pad positions to -100; a pre-made
+        # labels column cannot be padded by tokenizer.pad and breaks dynamic batching.
         return out
 
     # remove all original columns (keep only tokenized fields)
