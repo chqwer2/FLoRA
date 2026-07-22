@@ -3,7 +3,7 @@ import torch.nn as nn
 from typing import Optional, Literal
 
 GateType = Literal["none", "sigmoid", "rezero"]
-GateMode = Literal["global", "spatial", "channel", "voxel"]
+GateMode = Literal["global", "spatial", "channel", "voxel", "input"]
 GateStrength = Literal["soft", "hard"]
 
 
@@ -50,7 +50,23 @@ class Gate(nn.Module):
         # silently frozen at its init value and 'learn where nonlinearity is needed'
         # (plus the gate-L1 sparsity penalty) does nothing at all. Both shapes that do
         # not depend on the input sequence length are therefore built eagerly here.
-        if gate_mode == "global":
+        if gate_mode == "input":
+            # g(z) = sigmoid(w.z + b): the INPUT-CONDITIONAL gate the paper describes
+            # (sec. 3.5) but the code never implemented -- it shipped a static
+            # sigmoid(theta), which reviewers flagged as a code/paper mismatch.
+            #
+            # It also fixes the static gate's dead ends: a hard gate initialized closed
+            # multiplies phi by exactly 0, so phi receives no gradient and the gate's own
+            # gradient (measured at ~1/300 of B's) can never pry it open; initialized
+            # open it just stays open everywhere. A per-token gate is a genuine router --
+            # under multi-task training it can open for the tasks that need curvature.
+            if code_dim is None:
+                raise ValueError("Gate(gate_mode='input') needs code_dim (the rank r)")
+            self.w = nn.Parameter(torch.zeros(int(code_dim), dtype=dtype, device=device))
+            self.param = nn.Parameter(torch.full((1,), self.init, dtype=dtype, device=device))
+            # running mean of the realized openness, for the where-map at eval time
+            self.register_buffer("obs_openness", torch.tensor(float("nan")))
+        elif gate_mode == "global":
             self.param = nn.Parameter(torch.full((1,), self.init, dtype=dtype, device=device))
         elif gate_mode == "channel":
             if code_dim is None:
@@ -150,6 +166,17 @@ class Gate(nn.Module):
         """Return gate g in [0,1], reshaped to broadcast against x. None if gate disabled."""
         if self.gate_type == "none":
             return None
+        if self.gate_mode == "input":
+            logit = (x * self.w.to(x.dtype)).sum(dim=-1, keepdim=True) + self.param.to(x.dtype)
+            g = torch.sigmoid(logit) if self.gate_strength == "soft" else self._hard_sigmoid_st(logit)
+            # keep both a differentiable batch mean (for the L1 "learn where" penalty)
+            # and a detached running mean (for the where-map report)
+            self.last_openness = g.mean()
+            with torch.no_grad():
+                cur = g.detach().float().mean()
+                self.obs_openness = cur if torch.isnan(self.obs_openness) else (
+                    0.99 * self.obs_openness + 0.01 * cur)
+            return g
         self._init_param_from_x(x)
         p = self._reshape_param_for_x(x)
         if self.gate_type == "sigmoid":
@@ -164,6 +191,13 @@ class Gate(nn.Module):
         for an L1 sparsity penalty and for 'where is nonlinearity used' analysis."""
         if self.gate_type == "none" or self.param is None:
             return None
+        if self.gate_mode == "input":
+            # differentiable when a forward has run this step (L1 penalty), else the
+            # running estimate (reporting)
+            lo = getattr(self, "last_openness", None)
+            if lo is not None:
+                return lo.reshape(1)
+            return None if torch.isnan(self.obs_openness) else self.obs_openness.reshape(1)
         if self.gate_type == "sigmoid":
             return torch.sigmoid(self.param)
         if self.gate_type == "rezero":

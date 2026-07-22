@@ -1219,7 +1219,13 @@ def train_one_run(
         print("[LeNA] per-family gradient probe enabled")
 
 
-    trainer.train()
+    # LENA_EVAL_ONLY=1 skips training entirely: with B zero-initialized the adapter
+    # delta is exactly 0, so the final evaluation reports the FROZEN base model. That
+    # number is what says whether any of the fine-tuned deltas are meaningful at all.
+    if os.environ.get("LENA_EVAL_ONLY", "0") == "1":
+        print("[EVAL-ONLY] skipping training; reporting the frozen base model")
+    else:
+        trainer.train()
 
     # -------------------------
     # Final evaluation on full test set
