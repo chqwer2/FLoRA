@@ -353,6 +353,7 @@ def load_tokenize_one(
     cutoff_len: int,
     val_set_size: int,
     cache_dir: str,
+    seed: int = 42,
 ) -> DatasetDict:
 
     # Load. Several of the commonsense sets (piqa, hellaswag, winogrande, social_i_qa,
@@ -370,7 +371,8 @@ def load_tokenize_one(
         data_path=data_path,   # important for formatting rules in format_example_to_text()
         tokenizer=tokenizer,
         cutoff_len=cutoff_len,
-        val_set_size=val_set_size
+        val_set_size=val_set_size,
+        seed=seed,
     )
     return tok
 
@@ -378,7 +380,7 @@ def load_tokenize_one(
 # -------------------------
 # Fixed-length tokenization + split
 # -------------------------
-def tokenize_and_split(dataset: DatasetDict, data_path: str, tokenizer, cutoff_len: int, val_set_size: int):
+def tokenize_and_split(dataset: DatasetDict, data_path: str, tokenizer, cutoff_len: int, val_set_size: int, seed: int = 42):
     dataset = normalize_splits(dataset)
 
     # build "text" if missing
@@ -408,7 +410,7 @@ def tokenize_and_split(dataset: DatasetDict, data_path: str, tokenizer, cutoff_l
     # if dataset already has test split, keep it; otherwise split train
     if "test" not in tokenized:
         val_size = min(val_set_size, max(1, len(tokenized["train"]) // 10))
-        split = tokenized["train"].train_test_split(test_size=val_size, seed=42)
+        split = tokenized["train"].train_test_split(test_size=val_size, seed=seed)
         tokenized = DatasetDict({"train": split["train"], "test": split["test"]})
 
     return tokenized
@@ -785,8 +787,10 @@ def train_one_run(
     learning_rate: float,
     cutoff_len: int,
     val_set_size: int,
-    quantize: bool,
-    eval_step: int,
+    seed: int = 42,
+    max_train_samples: int = 0,
+    quantize: bool = False,
+    eval_step: int = 10,
     save_step: int,
     device_arg: str,
     lora_r: int,
@@ -958,6 +962,7 @@ def train_one_run(
             cutoff_len=cutoff_len,
             val_set_size=val_set_size,
             cache_dir=cache_dir,
+            seed=seed,
         )
 
         # Optional debug slicing per dataset
@@ -979,12 +984,16 @@ def train_one_run(
     if len(train_splits) == 1:
         train_dataset = train_splits[0]
     else:
-        train_dataset = concatenate_datasets(train_splits).shuffle(seed=42)
+        train_dataset = concatenate_datasets(train_splits).shuffle(seed=seed)
 
     # Pick ONE eval dataset for Trainer's periodic eval during training
     # (Final metrics are computed separately for each dataset after training.)
     first_name = list(test_splits_by_name.keys())[0]
     eval_dataset = test_splits_by_name[first_name]
+
+    if max_train_samples and max_train_samples > 0 and len(train_dataset) > max_train_samples:
+        train_dataset = train_dataset.select(range(max_train_samples))
+        print(f"[DATA] Subsampled train set to {max_train_samples} (--max_train_samples)")
 
     print(f"\n[DATA] Combined training dataset size = {len(train_dataset)}")
     print(f"[DATA] During-training eval dataset   = {first_name} (size={len(eval_dataset)})")
@@ -992,6 +1001,8 @@ def train_one_run(
     # Training args
     training_args = TrainingArguments(
         output_dir=output_dir,
+        seed=seed,
+        data_seed=seed,
         num_train_epochs=num_epochs,
         per_device_train_batch_size=batch_size,
         per_device_eval_batch_size=1,
@@ -1367,6 +1378,10 @@ if __name__ == "__main__":
     parser.add_argument("--num_epochs", type=int, default=1)
     parser.add_argument("--learning_rate", type=float, default=3e-4)
     parser.add_argument("--cutoff_len", type=int, default=512)
+    parser.add_argument("--seed", type=int, default=42,
+                        help="run seed; controls data split/shuffle and Trainer init (report >=3 seeds)")
+    parser.add_argument("--max_train_samples", type=int, default=0,
+                        help="cap the combined train set (0 = use all); keeps sweeps affordable")
     parser.add_argument("--val_set_size", type=int, default=500)
     parser.add_argument("--quantize", action="store_true")
 
@@ -1440,6 +1455,8 @@ if __name__ == "__main__":
         learning_rate=args.learning_rate,
         cutoff_len=args.cutoff_len,
         val_set_size=args.val_set_size,
+        seed=args.seed,
+        max_train_samples=args.max_train_samples,
         quantize=args.quantize,
         eval_step=args.eval_step,
         save_step=args.save_step,
