@@ -665,13 +665,13 @@ class FlexRankMix(nn.Module):
 
     kind = "rankmix"
 
-    def __init__(self, mode: FlexMode, a_init: float = 0.0, w_init: float = 0.02,
+    def __init__(self, mode: FlexMode, a_init: float = 0.0, w_init: Optional[float] = None,
                  max_h: Optional[int] = None, max_w: Optional[int] = None,
                  use_gate: str = "none"):
         super().__init__()
         self.mode = mode
         self.a_init = float(a_init)
-        self.w_init = float(w_init)
+        self.w_init = None if w_init is None else float(w_init)
         self.use_gate = use_gate
         self.a: Optional[nn.Parameter] = None
         self.W: Optional[nn.Parameter] = None
@@ -682,8 +682,15 @@ class FlexRankMix(nn.Module):
             return
         C = int(x.shape[-1])
         self.a = nn.Parameter(torch.full((C,), self.a_init, dtype=x.dtype, device=x.device))
-        # small random W: a zero W would make tanh(Wz)=0 and leave a with no signal
-        self.W = nn.Parameter(torch.randn(C, C, dtype=x.dtype, device=x.device) * self.w_init)
+        # W must start at a normal layer scale, NOT small. a is 0 at init (that is what
+        # buys the exact LoRA starting point), and dL/dW is proportional to a, so W's
+        # gradient is exactly 0 on the first step and W can only move once a does.
+        # Meanwhile dL/da is proportional to tanh(Wz): a small W makes that ~0.07 and a
+        # crawls, which deadlocks both. Measured at r=4: |dL/da| = 0.093 at w_init=0.02
+        # versus 0.317 at 1/sqrt(r). With w_init=0.02 the amplitude reached only
+        # |a| ~ 0.0035 after 125 steps and did not react to task conflict at all.
+        w = self.w_init if self.w_init is not None else C ** -0.5
+        self.W = nn.Parameter(torch.randn(C, C, dtype=x.dtype, device=x.device) * w)
         self.b = nn.Parameter(torch.zeros(C, dtype=x.dtype, device=x.device))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
