@@ -595,6 +595,55 @@ class FlexPolynomial(nn.Module):
 # Factory
 # -----------------------
 
+class FlexTanhRes(nn.Module):
+    """phi(z) = z + a * tanh(b * z), with per-channel a (init 0) and b (init 1).
+
+    Designed against what the gradient probe actually measured on a 7B run:
+
+    * The spline's knots are updated by bucketed interpolation, so each knot only
+      sees the samples that land in its bin -- its gradient came out ~350x smaller
+      than B's and the "learned" nonlinearity barely moved. Here every sample
+      contributes to every parameter (d/da = tanh(bz), d/db = a*z*sech^2(bz)), so
+      the signal is dense.
+    * The spline needs its input inside a fixed knot range, which forced a
+      pre-activation LayerNorm -- and that norm was what pushed the initial function
+      away from LoRA, inflated B's gradient into the clipping regime, and erased the
+      per-token magnitude the input-conditional claim rests on. tanh is bounded for
+      any input scale, so no pre-normalization is needed at all.
+    * a = 0 at init makes phi EXACTLY the identity, i.e. an exact LoRA starting
+      point that does not depend on the gate being initialized closed.
+
+    Costs 2r parameters per module instead of the spline's 16r.
+    """
+
+    kind = "tanhres"
+
+    def __init__(self, mode: FlexMode, a_init: float = 0.0, b_init: float = 1.0,
+                 max_h: Optional[int] = None, max_w: Optional[int] = None,
+                 use_gate: str = "none"):
+        super().__init__()
+        self.mode = mode
+        self.a_init = float(a_init)
+        self.b_init = float(b_init)
+        self.max_h = max_h
+        self.max_w = max_w
+        self.use_gate = use_gate
+        self.a: Optional[nn.Parameter] = None
+        self.b: Optional[nn.Parameter] = None
+
+    def _maybe_init(self, x: torch.Tensor):
+        if self.a is not None:
+            return
+        H, W, C = _infer_hwc(x)
+        shape = _param_base_shape(self.mode, H, W, C, max_h=self.max_h, max_w=self.max_w)
+        self.a = nn.Parameter(torch.full(shape, self.a_init, dtype=x.dtype, device=x.device))
+        self.b = nn.Parameter(torch.full(shape, self.b_init, dtype=x.dtype, device=x.device))
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        self._maybe_init(x)
+        return x + self.a * torch.tanh(self.b * x)
+
+
 def make_lena_activation(kind: ActKind, mode: FlexMode, **kwargs: Any) -> nn.Module:
     k = str(kind).lower()
     if k == "identity":
@@ -611,6 +660,9 @@ def make_lena_activation(kind: ActKind, mode: FlexMode, **kwargs: Any) -> nn.Mod
         act = FlexSpline(mode=mode, **kwargs)
     elif k == "polynomial":
         act = FlexPolynomial(mode=mode, **kwargs)
+    elif k == "tanhres":
+        kwargs.pop("use_gate", None)
+        act = FlexTanhRes(mode=mode, **kwargs)
     else:
         raise ValueError(f"Unknown lena activation kind: {kind}")
 

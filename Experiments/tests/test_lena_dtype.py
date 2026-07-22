@@ -18,7 +18,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 from peft.tuners.lena.layer import LeNALinear  # noqa: E402
 from peft.tuners.lena.config import LeNAConfig  # noqa: E402
 
-ACTIVATIONS = ["spline", "fourier", "polynomial", "swish", "identity"]
+ACTIVATIONS = ["spline", "fourier", "polynomial", "swish", "tanhres", "identity"]
 
 fails = []
 for act, dora, norm in itertools.product(ACTIVATIONS, [False, True], [True, False]):
