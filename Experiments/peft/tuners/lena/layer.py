@@ -172,6 +172,27 @@ class LeNALinear(nn.Module):
             **act_kwargs,
         )
 
+        # The Flex activations allocate their learnable parameters (spline knots_y,
+        # Fourier coefficients, ...) lazily on the first forward -- which happens AFTER
+        # the optimizer is constructed, so they never received a single update and the
+        # "learned nonlinearity" was in fact a fixed one. Materialize them now, while
+        # the module is still being built.
+        #
+        # 'global' -> (1,1,1) and 'dim' -> (1,1,C) are the shapes that do not depend on
+        # the input's H/W, so a zero probe of width r produces exactly the right shape.
+        flex_mode = str(cfg.lena_flex_mode).lower()
+        if str(cfg.lena_activation).lower() != "identity":
+            if flex_mode not in ("global", "dim"):
+                raise ValueError(
+                    f"lena_flex_mode={flex_mode!r} sizes the activation by sequence "
+                    "length, so its parameters cannot be registered before the "
+                    "optimizer is built; use 'global' or 'dim'."
+                )
+            with torch.no_grad():
+                # same [..., H, W, C] layout _to_hwc() hands the activation at runtime
+                probe = torch.zeros(1, 1, 1, r, dtype=A.weight.dtype, device=A.weight.device)
+                self.act[adapter_name](probe)
+
         # weight_norm
 
         with torch.no_grad():

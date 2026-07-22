@@ -13,6 +13,7 @@ from transformers import (
     BitsAndBytesConfig,
     DataCollatorForLanguageModeling,
     Trainer,
+    TrainerCallback,
     TrainingArguments,
 )
 
@@ -55,6 +56,36 @@ else:
 print("cache_dir =", cache_dir)
 # Quick smoke mode: slice datasets to a few dozen samples (set LENA_DEBUG=1).
 DEBUG = os.environ.get("LENA_DEBUG", "0") == "1"
+
+
+class LeNAGradProbe(TrainerCallback):
+    """Log the gradient norm of each LeNA parameter family separately.
+
+    A single global grad_norm cannot say whether the noise lives in A/B, in the
+    activation, or in the straight-through gate; this splits it out. Enable with
+    LENA_GRAD_PROBE=1.
+    """
+
+    FAMILIES = (("A", "lora_A"), ("B", "lora_B"), ("act", ".act."),
+                ("gate", ".gate."), ("mag", ".magnitude."))
+
+    def __init__(self, every: int = 20):
+        self.every = int(every)
+
+    def on_pre_optimizer_step(self, args, state, control, model=None, **kwargs):
+        if model is None or state.global_step % self.every:
+            return
+        sums = {label: 0.0 for label, _ in self.FAMILIES}
+        for n, p in model.named_parameters():
+            if p.grad is None:
+                continue
+            g = p.grad.detach().float().pow(2).sum().item()
+            for label, pat in self.FAMILIES:
+                if pat in n:
+                    sums[label] += g
+                    break
+        parts = " ".join(f"{k}={v ** 0.5:.4f}" for k, v in sums.items() if v > 0)
+        print(f"[grad step={state.global_step}] {parts}", flush=True)
 
 
 class LeNAGateL1Trainer(Trainer):
@@ -586,7 +617,17 @@ def build_grouped_optimizer(
         return (".act." in n) or ("lena_act" in n) or (n.endswith(".knots_y")) or (n.endswith(".c"))
 
     def is_gate(n: str) -> bool:
-        return (".gate_after_" in n) or ("lena_gate" in n) or ("gate_after" in n)
+        # The unified selection gate registers as "<module>.gate.<adapter>.param".
+        # The old gate_after_a/gate_after_b names are gone, so matching only those
+        # dropped the gate into the generic bucket -- full LR *and* weight decay,
+        # which drags the logit toward 0 i.e. straight onto the hard gate's decision
+        # boundary, where the straight-through estimator is at its noisiest.
+        return (".gate." in n) or ("lena_gate" in n) or (".gate_after_" in n)
+
+    def is_magnitude(n: str) -> bool:
+        # DoRA magnitude is initialized to ||W|| (order 10s); decaying it shrinks the
+        # effective base weight norm, which is not a regularizer but a bug.
+        return ".magnitude." in n
 
     def is_adapter(n: str) -> bool:
         # LoRA/DoRA names vary; for your LeNALinear it might be A/B or lena_A/lena_B
@@ -609,6 +650,8 @@ def build_grouped_optimizer(
 
         if is_act(n):
             groups["act_nodecay"].append(p)     # usually no WD for activation shaping
+        elif is_magnitude(n):
+            groups["adapter_nodecay"].append(p)
         elif is_gate(n):
             groups["gate_nodecay"].append(p)    # no WD for gates
         elif is_adapter(n):
@@ -1150,7 +1193,12 @@ def train_one_run(
         train_dataset=train_dataset,
         eval_dataset=eval_dataset,
         data_collator=data_collator,
-        # optimizers=(optimizer, None),
+        # The grouped optimizer was built above and then never passed, so every
+        # LR multiplier and the no-weight-decay rules for act/gate were dead code:
+        # HF built its own optimizer and decayed the gate logits toward 0.
+        # LENA_NO_GROUPED_OPT=1 restores that old behaviour, for A/B comparison.
+        **({} if os.environ.get("LENA_NO_GROUPED_OPT", "0") == "1"
+           else {"optimizers": (optimizer, None)}),
         compute_metrics=compute_metrics,  # <-- add this
         preprocess_logits_for_metrics=preprocess_logits_for_metrics,
     )
@@ -1159,6 +1207,10 @@ def train_one_run(
         print(f"[LeNA] gate-L1 'learn where' penalty enabled: coef={lena_gate_l1_coef}")
     else:
         trainer = Trainer(**trainer_kwargs)
+
+    if os.environ.get("LENA_GRAD_PROBE", "0") == "1":
+        trainer.add_callback(LeNAGradProbe(every=int(os.environ.get("LENA_GRAD_PROBE_EVERY", "20"))))
+        print("[LeNA] per-family gradient probe enabled")
 
 
     trainer.train()
