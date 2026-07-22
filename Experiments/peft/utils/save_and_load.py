@@ -221,6 +221,26 @@ def get_peft_model_state_dict(
         to_return["base_model.vblora_vector_bank." + adapter_name] = state_dict[
             "base_model.vblora_vector_bank." + adapter_name
         ]
+    elif config.peft_type == PeftType.LENA:
+        # LeNA stores its trainable pieces under names PEFT's prefix filter cannot see
+        # (lora_A/lora_B, plus act/gate/norm_before_act/magnitude), so the generic
+        # "prefix in key" rule below selects nothing and silently writes an EMPTY
+        # adapter file. Collect everything that lives inside a LeNALinear instead.
+        lena_keys = set()
+        for module_name, module in model.named_modules():
+            if module.__class__.__name__ != "LeNALinear":
+                continue
+            for param_name, _ in module.named_parameters():
+                if param_name.startswith("base_layer."):
+                    continue  # frozen base weights are not part of the adapter
+                lena_keys.add(f"{module_name}.{param_name}")
+        to_return = {k: state_dict[k] for k in state_dict if k in lena_keys}
+        if not to_return:
+            raise ValueError(
+                "LeNA adapter state dict came out empty -- refusing to write an "
+                "adapter file that contains no trained weights."
+            )
+
     elif config.peft_type in list(PeftType):
         prefix = PEFT_TYPE_TO_PREFIX_MAPPING[config.peft_type]
         to_return = {k: state_dict[k] for k in state_dict if prefix in k}

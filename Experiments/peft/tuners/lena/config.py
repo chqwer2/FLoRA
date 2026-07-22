@@ -16,8 +16,11 @@ LeNAGateMode = Literal["global", "per_dim"]
 
 @dataclass
 class LeNAConfig(LoraConfig):
-    # peft_type: str = field(default="FLORA", init=False)
-    peft_type: PeftType = field(default=PeftType.LENA, init=False)
+    # NOTE: peft_type is deliberately NOT redeclared as an init=False field here.
+    # A saved adapter_config.json contains "peft_type", and PeftConfig.from_peft_type
+    # feeds the whole json back as kwargs; an init=False field makes that a TypeError
+    # and the config becomes unloadable. LoraConfig sets it in __post_init__ for the
+    # same reason, and so does __post_init__ below.
 
     # activation
     lena_activation: LeNAActivation = "identity"
