@@ -171,7 +171,11 @@ def main():
         tok.pad_token = tok.eos_token
 
     model = AutoModelForCausalLM.from_pretrained(
-        args.base_model, dtype=torch.float16, device_map="auto", cache_dir=cache_dir)
+        args.base_model, dtype=torch.float16,
+        # NOT device_map="auto": PEFT then loads the adapter weights on CPU while the
+        # base is sharded on GPU, and the first A(x) dies on a device mismatch.
+        device_map={"": 0} if torch.cuda.is_available() else None,
+        cache_dir=cache_dir)
 
     if args.adapter and not args.base_only:
         from peft import PeftModel
