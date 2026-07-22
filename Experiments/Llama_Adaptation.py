@@ -512,7 +512,11 @@ def tokenize_and_split(dataset: DatasetDict, data_path: str, tokenizer, cutoff_l
     def tokenize_function(examples):
         out = tokenizer(
             examples["text"],
-            padding="max_length",
+            # No padding here: DataCollatorForLanguageModeling pads each batch to its
+            # own longest sequence. Padding every example to the full 512 window made
+            # most batches mostly padding -- pure wasted compute, since the pad
+            # positions are masked to -100 and contribute nothing to the loss. The
+            # optimisation is exactly loss-equivalent.
             truncation=True,
             max_length=cutoff_len,
         )
