@@ -25,7 +25,7 @@ class LeNAConfig(LoraConfig):
     # activation
     lena_activation: LeNAActivation = "rankmix"   # best tested variant (cross-rank mixing)
     lena_activation_kwargs: Dict[str, Any] = field(default_factory=dict)
-    lena_flex_mode: LeNAFlexMode = "global"
+    lena_flex_mode: LeNAFlexMode = "dim"   # per-rank; global/dim are the only optimizer-safe modes
 
     # gating
     lena_gate_type: LeNAGateType = "sigmoid"      # input-conditional gate
