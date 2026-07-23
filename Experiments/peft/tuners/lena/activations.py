@@ -764,6 +764,49 @@ class FlexBilinear(nn.Module):
         return x + self.a * h
 
 
+class CompAFALoRA(nn.Module):
+    """AFA-LoRA (arXiv 2512.22455): phi(z)=beta*relu(z)+(1-beta)*z, beta ANNEALED 1->0.
+    No extra learnable params; nonlinearity anneals to linear over first 30% of steps.
+    We expose beta as a buffer set by a scheduler callback; default fixed for ablation."""
+    kind = "afa"
+    def __init__(self, mode="dim", **kw):
+        super().__init__(); self.register_buffer("beta", torch.tensor(1.0))
+    def forward(self, x):
+        return self.beta*torch.relu(x) + (1.0-self.beta)*x
+
+
+class CompAuroRA(nn.Module):
+    """AuroRA (NeurIPS'25, 2505.18738): sigma(Z)=tanh(H tanh(Z)) + w_s*spline(Z).
+    H is r~xr~ (cross-rank!), w_s per-dim spline weights. No exact LoRA fallback."""
+    kind = "aurora"
+    def __init__(self, mode="dim", n_knots=8, **kw):
+        super().__init__(); self.n_knots=int(n_knots); self.H=None; self.ws=None; self.ky=None
+        self.register_buffer("kx", torch.linspace(-3,3,self.n_knots))
+    def _init(self,x):
+        if self.H is not None: return
+        C=int(x.shape[-1]); d,dev=x.dtype,x.device
+        self.H=nn.Parameter(torch.eye(C,dtype=d,device=dev)+0.01*torch.randn(C,C,dtype=d,device=dev))
+        self.ws=nn.Parameter(torch.zeros(C,dtype=d,device=dev))
+        self.ky=nn.Parameter(self.kx.to(d).view(1,-1).repeat(C,1).clone())
+    def forward(self,x):
+        self._init(x)
+        fixed=torch.tanh(torch.matmul(torch.tanh(x), self.H.transpose(0,1)))
+        kx=self.kx.to(x.dtype); idx=torch.searchsorted(kx, x.clamp(kx[0],kx[-1]).contiguous())
+        idx=idx.clamp(1,self.n_knots-1)
+        yv=self.ky[torch.arange(x.shape[-1],device=x.device), idx]  # crude per-dim spline lookup
+        return fixed + self.ws*yv
+
+
+class CompLoRAN(nn.Module):
+    """LoRAN (EMNLP'24 Findings): Sinter(x)=A*sin(w*x)*x + x, A=5e-5, w=1e4 FIXED (not learned).
+    Applied elementwise. A=0 recovers LoRA."""
+    kind = "loran"
+    def __init__(self, mode="dim", amp=5e-5, freq=1e4, **kw):
+        super().__init__(); self.amp=float(amp); self.freq=float(freq)
+    def forward(self,x):
+        return self.amp*torch.sin(self.freq*x)*x + x
+
+
 def make_lena_activation(kind: ActKind, mode: FlexMode, **kwargs: Any) -> nn.Module:
     k = str(kind).lower()
     if k == "identity":
@@ -792,6 +835,12 @@ def make_lena_activation(kind: ActKind, mode: FlexMode, **kwargs: Any) -> nn.Mod
     elif k == "bilinear":
         kwargs.pop("use_gate", None)
         act = FlexBilinear(mode=mode, **kwargs)
+    elif k == "afa":
+        act = CompAFALoRA(mode=mode, **kwargs)
+    elif k == "aurora":
+        act = CompAuroRA(mode=mode, **kwargs)
+    elif k == "loran":
+        act = CompLoRAN(mode=mode, **kwargs)
     else:
         raise ValueError(f"Unknown lena activation kind: {kind}")
 
