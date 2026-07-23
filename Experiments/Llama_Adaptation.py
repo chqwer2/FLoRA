@@ -479,12 +479,18 @@ def load_tokenize_one(
 
     # Load. Several of the commonsense sets (piqa, hellaswag, winogrande, social_i_qa,
     # ...) are still script-based on the Hub, so newer `datasets` refuses them without
-    # an explicit opt-in to running the loading script.
-    if data_name and data_name.strip():
-        ds = load_dataset(data_path, data_name.strip(), cache_dir=cache_dir,
-                          trust_remote_code=True)
-    else:
-        ds = load_dataset(data_path, cache_dir=cache_dir, trust_remote_code=True)
+    # an explicit opt-in to running the loading script. rajpurkar/squad's script is
+    # incompatible with this datasets version, so fall back to its parquet export.
+    def _load(path, name):
+        try:
+            return (load_dataset(path, name, cache_dir=cache_dir, trust_remote_code=True)
+                    if name else load_dataset(path, cache_dir=cache_dir, trust_remote_code=True))
+        except Exception:
+            if path.startswith("rajpurkar/squad") or path == "squad":
+                return load_dataset(path, revision="refs/convert/parquet", cache_dir=cache_dir)
+            raise
+
+    ds = _load(data_path, data_name.strip() if data_name else None)
 
     # Tokenize/split -> returns DatasetDict with train/test
     tok = tokenize_and_split(
