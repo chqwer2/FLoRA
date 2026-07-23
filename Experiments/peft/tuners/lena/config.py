@@ -23,15 +23,15 @@ class LeNAConfig(LoraConfig):
     # same reason, and so does __post_init__ below.
 
     # activation
-    lena_activation: LeNAActivation = "identity"
+    lena_activation: LeNAActivation = "rankmix"   # best tested variant (cross-rank mixing)
     lena_activation_kwargs: Dict[str, Any] = field(default_factory=dict)
     lena_flex_mode: LeNAFlexMode = "global"
 
     # gating
-    lena_gate_type: LeNAGateType = "none"
+    lena_gate_type: LeNAGateType = "sigmoid"      # input-conditional gate
     lena_gate_position: LeNAGatePos = "after_b"  # deprecated: single selection gate acts on the code z
-    lena_gate_mode: LeNAGateMode = "global"
-    lena_gate_init: float = -2.0  # pre-sigmoid; negative => gate starts near-closed (starts at LoRA)
+    lena_gate_mode: LeNAGateMode = "input"        # g(z)=sigmoid(w.z+b), per-token
+    lena_gate_init: float = 0.0   # gate ~0.5 at init; a=0 in rankmix keeps exact-LoRA start
     gate_strength: str = "soft"  # Literal["soft", "hard"] = "soft"
 
     # merge
