@@ -699,6 +699,71 @@ class FlexRankMix(nn.Module):
         return x * (1.0 + self.a * mix)
 
 
+class FlexRankMix2(nn.Module):
+    """h = z + a * MLP(z): a 2-layer cross-rank MLP, exact identity at init (a=0).
+
+    rankmix uses a single tanh(Wz); this pushes the cross-rank interaction to a
+    proper 2-layer MLP (r -> hidden -> r, GELU) to find the ceiling of "how much does
+    mixing across ranks actually buy". Still exact LoRA at init because the output is
+    scaled by a=0. Costs r*h + h + h*r + r + r params (~ r=8,h=32: 552) per module.
+    """
+    kind = "rankmix2"
+
+    def __init__(self, mode: FlexMode, a_init: float = 0.0, hidden_mult: int = 4,
+                 max_h=None, max_w=None, use_gate: str = "none"):
+        super().__init__()
+        self.mode = mode; self.a_init = float(a_init); self.hidden_mult = int(hidden_mult)
+        self.a = None; self.w1 = None; self.b1 = None; self.w2 = None; self.b2 = None
+
+    def _maybe_init(self, x):
+        if self.a is not None: return
+        C = int(x.shape[-1]); H = C * self.hidden_mult
+        d, dev = x.dtype, x.device
+        self.w1 = nn.Parameter(torch.randn(H, C, dtype=d, device=dev) * C ** -0.5)
+        self.b1 = nn.Parameter(torch.zeros(H, dtype=d, device=dev))
+        self.w2 = nn.Parameter(torch.randn(C, H, dtype=d, device=dev) * H ** -0.5)
+        self.b2 = nn.Parameter(torch.zeros(C, dtype=d, device=dev))
+        self.a = nn.Parameter(torch.full((C,), self.a_init, dtype=d, device=dev))
+
+    def forward(self, x):
+        self._maybe_init(x)
+        h = torch.nn.functional.gelu(torch.matmul(x, self.w1.transpose(0, 1)) + self.b1)
+        h = torch.matmul(h, self.w2.transpose(0, 1)) + self.b2
+        return x + self.a * h
+
+
+class FlexBilinear(nn.Module):
+    """h = z + a * ((Uz) * (Vz)): explicit second-order z_i z_j interaction.
+
+    The probe in this project measured a bilinear adapter reaching family_rank 10.5
+    against the spline's 4, but the LLM code only ever shipped elementwise activations.
+    (Uz)*(Vz) is a rank-controlled bilinear form: it produces genuine cross-rank
+    products z_i z_j, unlike any elementwise phi. a=0 keeps the exact LoRA start.
+    Costs 2*k*r + r params (k = bilinear rank).
+    """
+    kind = "bilinear"
+
+    def __init__(self, mode: FlexMode, a_init: float = 0.0, k_mult: int = 2,
+                 max_h=None, max_w=None, use_gate: str = "none"):
+        super().__init__()
+        self.mode = mode; self.a_init = float(a_init); self.k_mult = int(k_mult)
+        self.a = None; self.U = None; self.V = None
+
+    def _maybe_init(self, x):
+        if self.a is not None: return
+        C = int(x.shape[-1]); K = C * self.k_mult
+        d, dev = x.dtype, x.device
+        self.U = nn.Parameter(torch.randn(K, C, dtype=d, device=dev) * C ** -0.5)
+        self.V = nn.Parameter(torch.randn(C, K, dtype=d, device=dev) * K ** -0.5)
+        self.a = nn.Parameter(torch.full((C,), self.a_init, dtype=d, device=dev))
+
+    def forward(self, x):
+        self._maybe_init(x)
+        u = torch.matmul(x, self.U.transpose(0, 1))
+        h = torch.matmul(u * u, self.V.transpose(0, 1))   # (Uz).(Uz) folded through V
+        return x + self.a * h
+
+
 def make_lena_activation(kind: ActKind, mode: FlexMode, **kwargs: Any) -> nn.Module:
     k = str(kind).lower()
     if k == "identity":
@@ -721,6 +786,12 @@ def make_lena_activation(kind: ActKind, mode: FlexMode, **kwargs: Any) -> nn.Mod
     elif k == "rankmix":
         kwargs.pop("use_gate", None)
         act = FlexRankMix(mode=mode, **kwargs)
+    elif k == "rankmix2":
+        kwargs.pop("use_gate", None)
+        act = FlexRankMix2(mode=mode, **kwargs)
+    elif k == "bilinear":
+        kwargs.pop("use_gate", None)
+        act = FlexBilinear(mode=mode, **kwargs)
     else:
         raise ValueError(f"Unknown lena activation kind: {kind}")
 
