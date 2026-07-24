@@ -775,6 +775,37 @@ class CompAFALoRA(nn.Module):
         return self.beta*torch.relu(x) + (1.0-self.beta)*x
 
 
+class AuroRAG(nn.Module):
+    """AuroRA + provable LoRA fallback: phi(z) = z + a * [tanh(H tanh(z)) + w_s*spline(z)].
+
+    AuroRA's sigma has NO clean linear fallback (nested tanh can't be identity). We wrap
+    its ANL in a residual scaled by a per-dim amplitude a initialized to 0, so at init
+    phi(z)=z EXACTLY (=> exact LoRA start, provable fallback), and the model learns how
+    much AuroRA-style nonlinearity to add. The layer-level input gate (gate_mode=input)
+    composes on top, giving AuroRA the input-conditioning it lacks.
+    """
+    kind = "aurorag"
+
+    def __init__(self, mode="dim", n_knots=8, a_init=0.0, **kw):
+        super().__init__(); self.n_knots=int(n_knots); self.a_init=float(a_init)
+        self.H=None; self.ws=None; self.ky=None; self.a=None
+        self.register_buffer("kx", torch.linspace(-3,3,self.n_knots))
+    def _init(self,x):
+        if self.H is not None: return
+        C=int(x.shape[-1]); d,dev=x.dtype,x.device
+        self.H=nn.Parameter(torch.eye(C,dtype=d,device=dev)+0.01*torch.randn(C,C,dtype=d,device=dev))
+        self.ws=nn.Parameter(torch.zeros(C,dtype=d,device=dev))
+        self.ky=nn.Parameter(self.kx.to(d).view(1,-1).repeat(C,1).clone())
+        self.a=nn.Parameter(torch.full((C,), self.a_init, dtype=d, device=dev))
+    def forward(self,x):
+        self._init(x)
+        fixed=torch.tanh(torch.matmul(torch.tanh(x), self.H.transpose(0,1)))
+        kx=self.kx.to(x.dtype); idx=torch.searchsorted(kx, x.clamp(kx[0],kx[-1]).contiguous())
+        idx=idx.clamp(1,self.n_knots-1)
+        yv=self.ky[torch.arange(x.shape[-1],device=x.device), idx]
+        return x + self.a * (fixed + self.ws*yv)
+
+
 class CompAuroRA(nn.Module):
     """AuroRA (NeurIPS'25, 2505.18738): sigma(Z)=tanh(H tanh(Z)) + w_s*spline(Z).
     H is r~xr~ (cross-rank!), w_s per-dim spline weights. No exact LoRA fallback."""
@@ -881,6 +912,9 @@ def make_lena_activation(kind: ActKind, mode: FlexMode, **kwargs: Any) -> nn.Mod
     elif k == "rankmixc":
         kwargs.pop("use_gate", None)
         act = FlexRankMixC(mode=mode, **kwargs)
+    elif k == "aurorag":
+        kwargs.pop("use_gate", None)
+        act = AuroRAG(mode=mode, **kwargs)
     else:
         raise ValueError(f"Unknown lena activation kind: {kind}")
 
