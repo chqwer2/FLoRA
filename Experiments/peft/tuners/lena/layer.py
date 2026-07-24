@@ -198,7 +198,7 @@ class LeNALinear(nn.Module):
         # (below) does the linear<->nonlinear interpolation, so activations no longer
         # carry their own inconsistent identity-init / internal gating.
         act_kwargs = dict(cfg.lena_activation_kwargs or {})
-        if str(cfg.lena_activation).lower() in ("fourier", "spline", "polynomial", "swish", "tanhres", "rankmix", "rankmix2", "bilinear", "afa", "aurora", "loran"):
+        if str(cfg.lena_activation).lower() in ("fourier", "spline", "polynomial", "swish", "tanhres", "rankmix", "rankmix2", "bilinear", "afa", "aurora", "loran", "rankmixc"):
             act_kwargs["use_gate"] = "none"
         self.act[adapter_name] = make_lena_activation(
             kind=cfg.lena_activation,

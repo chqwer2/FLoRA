@@ -807,6 +807,43 @@ class CompLoRAN(nn.Module):
         return self.amp*torch.sin(self.freq*x)*x + x
 
 
+class FlexRankMixC(nn.Module):
+    """Compressed-bottleneck cross-rank nonlinearity, AuroRA's key idea inside LeNA.
+
+    AuroRA beats LeNA on GSM8K (0.287 vs 0.224). The hypothesis: its win comes from
+    compressing the code to r~ << r BEFORE the nonlinearity, so the bottleneck truly
+    binds and the nonlinearity becomes necessary -- consistent with this project's
+    finding that nonlinearity only helps when rank is the constraint. LeNA at r=8 does
+    not bind hard enough (a -> 0). Here we down-project z (dim r) to r~ = max(2, r//k),
+    apply a (nested-tanh) cross-rank map there, and up-project back, added as residual.
+
+      u = Wd z            (r -> r~)          # compress
+      m = tanh(H tanh(u)) (r~ -> r~)         # AuroRA-style nested cross-rank
+      out = z + a * (Wu m) (r~ -> r)         # expand, residual; a=0 -> exact identity
+    """
+    kind = "rankmixc"
+
+    def __init__(self, mode: FlexMode, a_init: float = 0.0, compress: int = 4,
+                 max_h=None, max_w=None, use_gate: str = "none"):
+        super().__init__()
+        self.mode = mode; self.a_init = float(a_init); self.compress = int(compress)
+        self.a = None; self.Wd = None; self.H = None; self.Wu = None
+
+    def _maybe_init(self, x):
+        if self.a is not None: return
+        C = int(x.shape[-1]); rt = max(2, C // self.compress)
+        d, dev = x.dtype, x.device
+        self.Wd = nn.Parameter(torch.randn(rt, C, dtype=d, device=dev) * C ** -0.5)
+        self.H  = nn.Parameter(torch.eye(rt, dtype=d, device=dev) + 0.01*torch.randn(rt, rt, dtype=d, device=dev))
+        self.Wu = nn.Parameter(torch.randn(C, rt, dtype=d, device=dev) * rt ** -0.5)
+        self.a  = nn.Parameter(torch.full((C,), self.a_init, dtype=d, device=dev))
+
+    def forward(self, x):
+        self._maybe_init(x)
+        u = torch.matmul(x, self.Wd.transpose(0, 1))          # compress r->r~
+        m = torch.tanh(torch.matmul(torch.tanh(u), self.H.transpose(0, 1)))  # nested cross-rank
+        return x + self.a * torch.matmul(m, self.Wu.transpose(0, 1))         # expand + residual
+
 def make_lena_activation(kind: ActKind, mode: FlexMode, **kwargs: Any) -> nn.Module:
     k = str(kind).lower()
     if k == "identity":
@@ -841,6 +878,9 @@ def make_lena_activation(kind: ActKind, mode: FlexMode, **kwargs: Any) -> nn.Mod
         act = CompAuroRA(mode=mode, **kwargs)
     elif k == "loran":
         act = CompLoRAN(mode=mode, **kwargs)
+    elif k == "rankmixc":
+        kwargs.pop("use_gate", None)
+        act = FlexRankMixC(mode=mode, **kwargs)
     else:
         raise ValueError(f"Unknown lena activation kind: {kind}")
 

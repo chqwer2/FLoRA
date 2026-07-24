@@ -6,7 +6,7 @@ from peft.utils.peft_types import PeftType
 
 from peft.tuners.lora import LoraConfig
 
-LeNAActivation = Literal["identity", "relu", "gelu", "fourier", "spline", "polynomial", "swish", "tanhres", "rankmix", "rankmix2", "bilinear", "afa", "aurora", "loran"]
+LeNAActivation = Literal["identity", "relu", "gelu", "fourier", "spline", "polynomial", "swish", "tanhres", "rankmix", "rankmix2", "bilinear", "afa", "aurora", "loran", "rankmixc"]
 LeNAFlexMode = Literal["global", "spatial", "channel", "voxel"]
 
 LeNAGateType = Literal["none", "sigmoid", "rezero"]
