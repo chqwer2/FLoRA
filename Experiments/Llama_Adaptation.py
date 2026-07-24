@@ -1604,7 +1604,7 @@ if __name__ == "__main__":
         default="global",
         # "input" = g(z)=sigmoid(w.z+b), the input-conditional gate. spatial/voxel are
         # sized by sequence length and are rejected by Gate() as unregisterable.
-        choices=["global", "channel", "input"],
+        choices=["global", "channel", "input", "context"],
         help="Gate mode for position after_a",
     )
     parser.add_argument("--gate_strength", type=str, default="soft",)

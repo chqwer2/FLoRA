@@ -3,7 +3,7 @@ import torch.nn as nn
 from typing import Optional, Literal
 
 GateType = Literal["none", "sigmoid", "rezero"]
-GateMode = Literal["global", "spatial", "channel", "voxel", "input"]
+GateMode = Literal["global", "spatial", "channel", "voxel", "input", "context"]
 GateStrength = Literal["soft", "hard"]
 
 
@@ -50,7 +50,20 @@ class Gate(nn.Module):
         # silently frozen at its init value and 'learn where nonlinearity is needed'
         # (plus the gate-L1 sparsity penalty) does nothing at all. Both shapes that do
         # not depend on the input sequence length are therefore built eagerly here.
-        if gate_mode == "input":
+        if gate_mode == "context":
+            # g(z_i) = sigmoid(w.z_i + u.causal_mean(z_<=i) + b): the gate that decides
+            # nonlinearity strength depends on the CAUSAL CONTEXT, not just the current
+            # token. This is the cross-token piece every prior nonlinear-PEFT lacks --
+            # AuroRA/LeNA gate/activate per token independently, which cannot model the
+            # reasoning dependency ("what to compute at '?' depends on preceding tokens").
+            # Causal (cumulative) mean is cheap and does not leak future tokens.
+            if code_dim is None:
+                raise ValueError("Gate(gate_mode='context') needs code_dim (the rank r)")
+            self.w = nn.Parameter(torch.zeros(int(code_dim), dtype=dtype, device=device))
+            self.u = nn.Parameter(torch.zeros(int(code_dim), dtype=dtype, device=device))
+            self.param = nn.Parameter(torch.full((1,), self.init, dtype=dtype, device=device))
+            self.register_buffer("obs_openness", torch.tensor(float("nan")))
+        elif gate_mode == "input":
             # g(z) = sigmoid(w.z + b): the INPUT-CONDITIONAL gate the paper describes
             # (sec. 3.5) but the code never implemented -- it shipped a static
             # sigmoid(theta), which reviewers flagged as a code/paper mismatch.
@@ -166,6 +179,23 @@ class Gate(nn.Module):
         """Return gate g in [0,1], reshaped to broadcast against x. None if gate disabled."""
         if self.gate_type == "none":
             return None
+        if self.gate_mode == "context":
+            # x is the code z, shape [B, T, C] (token dim = -2). Causal mean over tokens.
+            xf = x
+            tdim = -2
+            csum = torch.cumsum(xf, dim=tdim)
+            cnt = torch.arange(1, xf.shape[tdim] + 1, device=xf.device, dtype=xf.dtype)
+            shape = [1] * xf.ndim; shape[tdim] = xf.shape[tdim]
+            ctx = csum / cnt.view(shape)                       # causal_mean(z_<=i)
+            logit = ((x * self.w.to(x.dtype)).sum(dim=-1, keepdim=True)
+                     + (ctx * self.u.to(x.dtype)).sum(dim=-1, keepdim=True)
+                     + self.param.to(x.dtype))
+            g = torch.sigmoid(logit) if self.gate_strength == "soft" else self._hard_sigmoid_st(logit)
+            self.last_openness = g.mean()
+            with torch.no_grad():
+                cur = g.detach().float().mean()
+                self.obs_openness = cur if torch.isnan(self.obs_openness) else (0.99*self.obs_openness + 0.01*cur)
+            return g
         if self.gate_mode == "input":
             logit = (x * self.w.to(x.dtype)).sum(dim=-1, keepdim=True) + self.param.to(x.dtype)
             g = torch.sigmoid(logit) if self.gate_strength == "soft" else self._hard_sigmoid_st(logit)
@@ -191,7 +221,7 @@ class Gate(nn.Module):
         for an L1 sparsity penalty and for 'where is nonlinearity used' analysis."""
         if self.gate_type == "none" or self.param is None:
             return None
-        if self.gate_mode == "input":
+        if self.gate_mode in ("input", "context"):
             # differentiable when a forward has run this step (L1 penalty), else the
             # running estimate (reporting)
             lo = getattr(self, "last_openness", None)

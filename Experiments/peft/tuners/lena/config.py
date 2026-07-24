@@ -11,7 +11,7 @@ LeNAFlexMode = Literal["global", "spatial", "channel", "voxel"]
 
 LeNAGateType = Literal["none", "sigmoid", "rezero"]
 LeNAGatePos = Literal["after_a", "after_b", "both"]
-LeNAGateMode = Literal["global", "channel", "input"]
+LeNAGateMode = Literal["global", "channel", "input", "context"]
 
 
 @dataclass
