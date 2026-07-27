@@ -1,0 +1,39 @@
+[BEFORE] greedy=0.2250  sc_vote=0.2500
+[phase-A] collected 174 correct self-generated chains from 250 train Q
+[RESULT] BEFORE greedy=0.2250 vote=0.2500 | AFTER greedy=0.2125 vote=0.2875 (dgreedy=-0.0125 dvote=+0.0375)
+[BEFORE] greedy=0.2000  sc_vote=0.3000
+[phase-A] collected 221 correct self-generated chains from 250 train Q
+[RESULT] BEFORE greedy=0.2000 vote=0.3000 | AFTER greedy=0.2875 vote=0.3250 (dgreedy=+0.0875 dvote=+0.0250)
+[BEFORE] greedy=0.1875  sc_vote=0.2625
+[phase-A] collected 230 correct self-generated chains from 250 train Q
+[RESULT] BEFORE greedy=0.1875 vote=0.2625 | AFTER greedy=0.1625 vote=0.3500 (dgreedy=-0.0250 dvote=+0.0875)
+[BEFORE] greedy=0.2250  sc_vote=0.2875
+[phase-A] collected 209 correct self-generated chains from 250 train Q
+[RESULT] BEFORE greedy=0.2250 vote=0.2875 | AFTER greedy=0.2250 vote=0.3125 (dgreedy=+0.0000 dvote=+0.0250)
+[BEFORE] greedy=0.1625  sc_vote=0.2250
+[phase-A] collected 257 correct self-generated chains from 250 train Q
+[RESULT] BEFORE greedy=0.1625 vote=0.2250 | AFTER greedy=0.1875 vote=0.3875 (dgreedy=+0.0250 dvote=+0.1625)
+[BEFORE] greedy=0.2000 vote=0.1500
+[phase-A r1] collected 207 correct chains
+[RESULT r1] greedy=0.2000 vote=0.3375 (dgreedy=+0.0000 dvote=+0.1875)
+[phase-A r2] collected 336 correct chains
+[BEFORE] greedy=0.2250 vote=0.2500
+[phase-A r1] collected 189 correct chains
+[RESULT] static(K=0) acc=0.1600
+[RESULT] TTT(K=5) acc=0.1400  delta=-0.0200
+[RESULT] static(K=0) acc=0.1600
+[RESULT] TTT(K=20) acc=0.1600  delta=+0.0000
+[RESULT] static(K=0) acc=0.1600
+[RESULT] TTT(K=10) acc=0.1600  delta=+0.0000
+[RESULT] static(K=0) acc=0.1600
+[RESULT] TTT(K=10) acc=0.0000  delta=-0.1600
+[RESULT] static(K=0) acc=0.2000
+[RESULT] TTT(K=10) acc=0.1000  delta=-0.1000
+[RESULT] static_greedy=0.2250  sc_vote=0.3125  GLOBAL_ttt_greedy=0.2000  (post-static=-0.0250  post-vote=-0.1125)
+[RESULT] static_greedy=0.2000  sc_vote=0.1750  GLOBAL_ttt_greedy=0.2250  (post-static=+0.0250  post-vote=+0.0500)
+[RESULT] static=0.2250  sc_vote=0.2250  sc_ttt=0.1625  (ttt-static=-0.0625  ttt-vote=-0.0625)
+[RESULT] static=0.2250  sc_vote=0.3375  sc_ttt=0.2250  (ttt-static=+0.0000  ttt-vote=-0.1125)
+[RESULT] static=0.2250  sc_vote=0.2250  sc_ttt=0.1750  (ttt-static=-0.0500  ttt-vote=-0.0500)
+[RESULT] static=0.2000  sc_vote=0.2625  sc_ttt=0.2375  (ttt-static=+0.0375  ttt-vote=-0.0250)
+[RESULT] static=0.1625  sc_vote=0.2750  sc_ttt=0.2500  (ttt-static=+0.0875  ttt-vote=-0.0250)
+[RESULT] static=0.2375  sc_vote=0.2500  sc_ttt=0.2375  (ttt-static=+0.0000  ttt-vote=-0.0125)
