@@ -39,11 +39,20 @@ self-supervised (prompt-LM) objective is too weak without per-example labels.
 
 ## New methods this round
 
-### IQ-LoRA (input-dependent quadratic)
-- Single-task **MNLI** (near-saturated 0.88): IQ **0.8820** vs LoRA **0.8800** = **+0.002 (noise)**;
-  CHECK `lam_mean=−0.0034` ⇒ optimizer drove λ→0 (rejected the quadratic on this easy/saturated task).
-- **Inconclusive** (saturated task + λ cold-start). Re-running on multi-task (headroom on gsm/piqa)
-  with λ∈{0, 0.5-warm} to see if the quadratic activates & helps where there is room. [see logs]
+### IQ-LoRA (input-dependent quadratic) — NULL but STABLE
+- Single-task **MNLI** (near-saturated 0.88): IQ 0.8820 vs LoRA 0.8800 = +0.002 (noise); λ→0.
+- **Multi-task** (headroom on gsm/piqa), real accuracy vs LoRA:
+
+| metric | LoRA | IQ-LoRA | Δ |
+|---|---|---|---|
+| eval_choice AVG | 0.5664 | 0.5798 | +0.013 (within noise ±0.024) |
+| mnli-gen | 0.870 | 0.865 | −0.005 (flat) |
+| gsm-gen | 0.06 | 0.05 | flat |
+
+- CHECK `lam_mean=0.0086, lam_absmax=0.108` — the optimizer used the quadratic only slightly.
+- **Verdict: ≈ LoRA (all within noise) — the 2nd-order feature interaction gives no real gain here.**
+  BUT unlike the TTT methods it does NOT break generation (mnli-gen 0.865) — a per-token feedforward
+  quadratic is decode-safe by construction. Null but stable.
 
 ### Two-path TTT (ViT³-grounded, causal) — FAILED (worse than baseline on both metrics)
 - **Causality verified** (smoke): perturbing position i leaves all outputs <i exactly unchanged.

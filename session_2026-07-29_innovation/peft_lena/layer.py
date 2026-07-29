@@ -256,6 +256,7 @@ class LeNALinear(nn.Module):
         self.lora_Bg = nn.ModuleDict()
         self.lora_A2 = nn.ModuleDict()
         self.iq_lam = nn.ParameterDict()
+        self.pclora_lam = nn.ParameterDict()
 
         self.scaling: Dict[str, float] = {}
         self._active_adapter: Optional[str] = None
@@ -320,6 +321,8 @@ class LeNALinear(nn.Module):
             p.requires_grad = True
         for p in self.lora_B[adapter_name].parameters():
             p.requires_grad = True
+        if os.environ.get("LENA_PCLORA"):
+            self.pclora_lam[adapter_name] = nn.Parameter(torch.zeros(1))  # lam init 0 => exact LoRA start
         if os.environ.get("LENA_IQ"):
             A2 = nn.Linear(self.in_features, r, bias=False)
             nn.init.xavier_uniform_(A2.weight)
@@ -578,6 +581,17 @@ class LeNALinear(nn.Module):
                     A2.to(x.device); self.iq_lam[name].data = self.iq_lam[name].data.to(x.device)
                 z2 = A2(drop(x).to(A2.weight.dtype))
                 z = z + self.iq_lam[name].to(z.dtype) * (z * z2)   # input-dependent quadratic code
+            if name in self.pclora_lam:
+                # Prompt-conditioned (TTT idea, decode-safe): causal-prefix associative-memory
+                # fit MODULATING the code. corr_i = (1/i) sum_{j<=i} <z_j,z_i> z_j =
+                # (1/i)(cumsum_j z_j z_j^T) z_i. Causal => decode-safe. lam init 0 => exact LoRA.
+                if z.dim() >= 3:
+                    zc = z.to(torch.float32)
+                    S = torch.cumsum(torch.einsum('bnr,bns->bnrs', zc, zc), dim=1)
+                    n = zc.shape[-2]
+                    cnt = torch.arange(1, n + 1, device=zc.device, dtype=torch.float32).view(-1, 1)
+                    corr = torch.einsum('bnr,bnrs->bns', zc, S) / cnt
+                    z = z + self.pclora_lam[name].to(z.dtype) * corr.to(z.dtype)
             dz = B(self._phi(name, z, act, gate))
         if name in self.steer:
             st = self.steer[name]
