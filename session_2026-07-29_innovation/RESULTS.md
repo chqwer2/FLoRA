@@ -45,10 +45,23 @@ self-supervised (prompt-LM) objective is too weak without per-example labels.
 - **Inconclusive** (saturated task + λ cold-start). Re-running on multi-task (headroom on gsm/piqa)
   with λ∈{0, 0.5-warm} to see if the quadratic activates & helps where there is room. [see logs]
 
-### Two-path TTT (ViT³-grounded, causal)
+### Two-path TTT (ViT³-grounded, causal) — FAILED (worse than baseline on both metrics)
 - **Causality verified** (smoke): perturbing position i leaves all outputs <i exactly unchanged.
-- Trained multi-task; eval pending. Critical check: mnli-gen must stay >0.8 (vs the non-causal
-  ttt2's 0.31) — proving the causal fix. [see logs]
+- Multi-task, real accuracy vs LoRA:
+
+| metric | LoRA | 2pttt (causal) | Δ |
+|---|---|---|---|
+| eval_choice AVG | 0.5664 | **0.4526** | **−0.11** |
+| mnli-gen | 0.870 | **0.2550** | **−0.61 (collapsed)** |
+
+- **KEY finding — causal fix did NOT save generation.** The collapse is NOT future-leakage (causality
+  was verified); it is **decode-time degeneracy**: autoregressive generation with KV-cache passes ONE
+  token per step, so the TTT inner-model fit (which needs a sequence of k→v pairs) is degenerate at
+  decode → garbage write → generation collapses. eval_choice also drops (the multi-task-trained TTT
+  write mis-generalizes to the zero-shot commonsense suite).
+- **Conclusion**: the TTT-layer mechanism (ViT³) does NOT port to a PEFT adapter on an autoregressive
+  decoder — it breaks generation whether non-causal (leakage) OR causal (decode degeneracy). A clean,
+  novel negative result about *why* TTT-layers don't transfer to autoregressive-decoder PEFT.
 
 ## Honest bottom line
 No original mechanism has beaten LoRA on real accuracy **beyond the noise floor**. The robust,
