@@ -104,3 +104,22 @@ publishable products are the **methodological findings**:
 
 Two new mechanisms (IQ-LoRA, causal two-path TTT) are implemented, verified, and under a
 **properly-powered (low-variance/headroom) evaluation** — the correct way to detect a real 1–2% effect.
+
+## Full TTT/variant sweep (multi-task) + WHY everything ≈ LoRA
+| method | eval_choice AVG | mnli-gen |
+|---|---|---|
+| LoRA | 0.5664 | 0.870 |
+| IQ warm-λ (λ kept ~0.55) | 0.5690 | 0.880 |
+| reuse-code TTT (reuse LoRA's z as qkv) | 0.5740 | 0.860 |
+| fixed lora-TTT (own qkv) | 0.5777 | 0.860 |
+| fixed lora-TTT, inner lr=0.5 | 0.5814 | 0.855 |
+| aurora-TTT | 0.5831 | 0.860 |
+
+**All within 0.566–0.583 (spread 0.017 < noise ±0.024) — none beats LoRA beyond noise; reuse-code did
+NOT beat own-qkv.** This is NOT an adapter-loading bug (the fixed-TTT went 0.4526→0.5777 when its module
+was fixed, and base 0.54 → adapters 0.57 → the adapters ARE applied and differ). It is the multi-task
+eval being INSENSITIVE: (1) eval_choice averages 8 commonsense tasks but the adapter was trained on only
+1 of them (piqa) — 7/8 are zero-shot transfer where every adapter ≈ base ≈ each other, diluting the AVG;
+(2) trained tasks are saturated (mnli 0.87) or high-variance (gsm 0.06±0.055). Real 1–2% differences are
+below the noise floor. NEXT: compare on a SINGLE in-domain task with headroom + many samples (single-task
+GSM8K r=2, the regime where nonlinearity provably helps) to get a metric that can actually resolve them.
