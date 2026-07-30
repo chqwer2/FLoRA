@@ -68,9 +68,27 @@ self-supervised (prompt-LM) objective is too weak without per-example labels.
   token per step, so the TTT inner-model fit (which needs a sequence of k→v pairs) is degenerate at
   decode → garbage write → generation collapses. eval_choice also drops (the multi-task-trained TTT
   write mis-generalizes to the zero-shot commonsense suite).
-- **Conclusion**: the TTT-layer mechanism (ViT³) does NOT port to a PEFT adapter on an autoregressive
-  decoder — it breaks generation whether non-causal (leakage) OR causal (decode degeneracy). A clean,
-  novel negative result about *why* TTT-layers don't transfer to autoregressive-decoder PEFT.
+- **Conclusion (SUPERSEDED — see below)**: initially read as "TTT-layer breaks generation."
+
+### ★ CORRECTION: the two-path TTT "failure" was an IMPLEMENTATION BUG, not the idea
+Re-checking my causal port against the official ViT³ code (`inner_train_simplified_swiglu`), I had
+DROPPED both of ViT³'s explicit "for stability" mechanisms:
+1. the `1/N` gradient normalization (ViT³ divides by seq-len; causal ⇒ divide by prefix length `i`)
+2. the gradient clipping `g/(||g||+1)`
+Without them the causal cumulative inner-update EXPLODES with position → garbage writes → the
+collapse. After restoring both (1/i prefix-mean + clipping), the SAME method fully recovers:
+
+| version | eval_choice AVG | mnli-gen |
+|---|---|---|
+| buggy (no norm/clip) | 0.4526 | 0.255 |
+| **fixed (ViT³ stability restored)** | **0.5777** | **0.860** |
+| LoRA baseline | 0.5664 | 0.870 |
+
+**Both metrics fully recover to ≈LoRA.** So the earlier "TTT breaks generation" conclusion was WRONG
+— it was my missing-stability bug. The idea (causal two-path TTT as an adapter) is sound and stable.
+Honest caveat: the fixed version RECOVERS to ≈LoRA (+0.011 choice / −0.01 mnli, within noise) but does
+not yet BEAT it. Sweep of variants (aurora base, inner-lr, reuse-LoRA-code) in progress to see if any
+exceeds LoRA. Lesson: verify faithful reproduction of a method's stability tricks before concluding it fails.
 
 ## Honest bottom line
 No original mechanism has beaten LoRA on real accuracy **beyond the noise floor**. The robust,

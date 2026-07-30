@@ -98,8 +98,15 @@ class TwoPathTTT(nn.Module):
         ea = e * a
         eb = e * z1 * (sig * (1.0 + z2 * (1.0 - sig)))
         # causal cumulative inner-gradient states (position i sees only j<=i):
-        S1 = torch.cumsum(torch.einsum('bnr,bns->bnrs', k, ea), dim=1)   # [B,N,r,r]
-        S2 = torch.cumsum(torch.einsum('bnr,bns->bnrs', k, eb), dim=1)
+        Nn = k.shape[-2]
+        cnt = torch.arange(1, Nn + 1, device=k.device, dtype=k.dtype).view(1, Nn, 1, 1)
+        # ViT3 fix 1: prefix-MEAN gradient (ViT3 divides by N; causal => divide by i) -- keeps the
+        # inner update from exploding as the prefix grows.
+        S1 = torch.cumsum(torch.einsum('bnr,bns->bnrs', k, ea), dim=1) / cnt
+        S2 = torch.cumsum(torch.einsum('bnr,bns->bnrs', k, eb), dim=1) / cnt
+        # ViT3 fix 2: gradient CLIPPING g/(||g||+1) 'for stability' (per position, over dim -2).
+        S1 = S1 / (S1.norm(dim=-2, keepdim=True) + 1.0)
+        S2 = S2 / (S2.norm(dim=-2, keepdim=True) + 1.0)
         qw1 = torch.matmul(q, self.w1) - self.lr * torch.einsum('bnr,bnrs->bns', q, S1)
         qw2 = torch.matmul(q, self.w2) - self.lr * torch.einsum('bnr,bnrs->bns', q, S2)
         return qw1 * torch.nn.functional.silu(qw2)
@@ -110,14 +117,25 @@ class TwoPathTTT(nn.Module):
         o = torch.nn.functional.conv1d(xc, self.conv.to(xc.dtype), groups=self.r)
         return o.transpose(1, 2)                                  # [B,N,r]
 
-    def forward(self, x):
+    def forward(self, x, z=None):
         sq = False
         if x.dim() == 2:
-            x = x.unsqueeze(0); sq = True
-        xf = x.to(self.Wq.dtype)
-        q = torch.matmul(xf, self.Wq.t()); k = torch.matmul(xf, self.Wk.t()); v = torch.matmul(xf, self.Wv.t())
-        o1 = self._causal_swiglu(q, k, v)                         # global [B,N,r]
-        o2 = self._causal_conv(torch.matmul(xf, self.Wq2.t()))    # local  [B,N,r]
+            x = x.unsqueeze(0)
+            if z is not None:
+                z = z.unsqueeze(0)
+            sq = True
+        if z is not None:
+            # SHARED-CODE mode: reuse LoRA's own r-dim code z as q=k=v (no Wq/Wk/Wv) -> TTT refines
+            # LoRA's learned code. Param-efficient + semantically grounded.
+            zc = z.to(self.w1.dtype)
+            q = k = v = zc
+            o1 = self._causal_swiglu(q, k, v)
+            o2 = self._causal_conv(zc)
+        else:
+            xf = x.to(self.Wq.dtype)
+            q = torch.matmul(xf, self.Wq.t()); k = torch.matmul(xf, self.Wk.t()); v = torch.matmul(xf, self.Wv.t())
+            o1 = self._causal_swiglu(q, k, v)
+            o2 = self._causal_conv(torch.matmul(xf, self.Wq2.t()))
         o = torch.cat([o1, o2], dim=-1)                           # [B,N,2r]
         delta = torch.matmul(o, self.Bt.t())
         if sq:
@@ -612,7 +630,10 @@ class LeNALinear(nn.Module):
             tp = self.twopttt[name]
             if tp.Wq.device != x.device:
                 tp.to(x.device)
-            dz = dz + tp(x).to(dz.dtype)
+            if os.environ.get("LENA_2PTTT_SHAREZ"):
+                dz = dz + tp(x, z=z).to(dz.dtype)   # reuse LoRA code z as q=k=v
+            else:
+                dz = dz + tp(x).to(dz.dtype)
 
         if self.use_dora:
             # LeNA-D: DoRA-style magnitude/direction rescaling. NOTE: the direction norm
