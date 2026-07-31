@@ -134,8 +134,15 @@ real differences. Re-ran the key methods here:
 | **LoRA** | **0.262** | baseline |
 | AuroRA | 0.236 | −0.026 |
 | IQ-LoRA (bare diagonal quadratic) | 0.228 | −0.034 |
-| IQ2 (bounded cross-rank: tanh + H) | ~aurora-level (eval infra issues) | — |
-| two-path TTT / reuse-code | eval too slow (TTT generation) | — |
+| IQ2 (bounded cross-rank: tanh + H) | 0.230 | −0.032 |
+| two-path TTT / reuse-code | eval timed out (TTT generation too slow on contended node) | — |
+
+**IQ2 = 0.230 ≈ IQ 0.228 ≈ AuroRA 0.236, all BELOW LoRA 0.262.** The fix (borrowing AuroRA's exact
+tanh + H mechanisms) correctly removes the diagnosed pathologies (spikes, diagonal-only interaction) yet
+STILL does not help — because the ceiling, not the specific mechanism, is the problem. Even with
+AuroRA's mechanisms verbatim, it lands at AuroRA's level, below well-trained LoRA. **This definitively
+confirms: nonlinearity/quadratic/cross-rank mechanisms do not beat a well-trained LoRA at r=2 — the
+historical r=2 nonlinearity advantage was an under-training artifact.**
 
 ### ★★ KEY finding — AuroRA's r=2 advantage does NOT reproduce; it was an UNDER-TRAINING artifact
 Historical: LoRA r2 0.194, AuroRA r2 0.257 (+0.063). Here: **LoRA r2 0.262** (much higher — better
