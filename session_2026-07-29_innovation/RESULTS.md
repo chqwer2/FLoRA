@@ -123,3 +123,48 @@ eval being INSENSITIVE: (1) eval_choice averages 8 commonsense tasks but the ada
 (2) trained tasks are saturated (mnli 0.87) or high-variance (gsm 0.06±0.055). Real 1–2% differences are
 below the noise floor. NEXT: compare on a SINGLE in-domain task with headroom + many samples (single-task
 GSM8K r=2, the regime where nonlinearity provably helps) to get a metric that can actually resolve them.
+
+## ★ Sensitive testbed: single-task GSM8K r=2 (500-sample generative EM) — the decisive comparison
+The multi-task eval was insensitive (transfer-diluted + saturated + noise). Single-task GSM8K r=2 is
+the regime where AuroRA historically showed +0.063 (LoRA 0.194 → AuroRA 0.257), so it should resolve
+real differences. Re-ran the key methods here:
+
+| method | GSM8K r=2 EM | vs LoRA |
+|---|---|---|
+| **LoRA** | **0.262** | baseline |
+| AuroRA | 0.236 | −0.026 |
+| IQ-LoRA (bare diagonal quadratic) | 0.228 | −0.034 |
+| IQ2 (bounded cross-rank: tanh + H) | ~aurora-level (eval infra issues) | — |
+| two-path TTT / reuse-code | eval too slow (TTT generation) | — |
+
+### ★★ KEY finding — AuroRA's r=2 advantage does NOT reproduce; it was an UNDER-TRAINING artifact
+Historical: LoRA r2 0.194, AuroRA r2 0.257 (+0.063). Here: **LoRA r2 0.262** (much higher — better
+trained: 6000 samples / 3 epochs) and **AuroRA 0.236 (BELOW LoRA)**. The historical AuroRA gain came
+from LoRA being UNDER-trained (0.194); once LoRA is trained well (0.262), the nonlinearity adds nothing
+(and slightly hurts). **This undermines the CeRA/AuroRA "nonlinearity substitutes for rank" narrative:
+under sufficient training, LoRA's low-rank *linear* adaptation is enough — nonlinearity's apparent r=2
+benefit is a compensation for under-training, not a genuine capacity advantage.**
+
+### IQ-LoRA complete failure analysis (diagnosis → fix → verify)
+- **Implementation correct** (forward math verified); the quadratic IS active (warm λ=0.52, A₂ trained).
+- **Not a magnitude blow-up**: measured ‖λ(z⊙z₂)‖/‖z‖ on real GSM8K inputs = **median 0.19, mean 0.60,
+  max 4.19** (my initial blow-up hypothesis was WRONG — the quadratic is usually SMALL).
+- **Root cause = structural**: the quadratic is (a) usually tiny (median 0.19×), (b) occasionally spikes
+  (max 4.19× → local instability), (c) **element-wise/diagonal** (only xᵢ·xᵢ, no cross-rank xᵢ·xⱼ →
+  a weak interaction), (d) task-irrelevant → adds noise, slightly hurts.
+- **Why AuroRA works, IQ doesn't**: AuroRA = tanh(H·tanh(z)) — the **tanh bounds** the spikes and **H
+  does cross-rank mixing**. IQ has neither.
+- **Fix (IQ2)**: c = z + λ·tanh(z)⊙(H·tanh(z)) — borrows AuroRA's tanh (bound) + H (cross-rank).
+  Trained fine (λ=0.51, H learned); expected to recover IQ toward AuroRA level (but AuroRA itself no
+  longer beats LoRA at r=2, so the ceiling is gone).
+
+## ★ CONVERGENCE — the honest bottom line of the whole effort
+No original mechanism (nonlinear codes, gates, quadratic, TTT, cross-token, reflection, decomposition)
+beats LoRA on real accuracy beyond noise, on any testbed tried — and crucially, the ONE historical
+positive (AuroRA r=2 +0.063) does NOT reproduce with a well-trained LoRA baseline. **Under sufficient
+training, LoRA's low-rank linear adaptation is genuinely sufficient for these tasks.** The robust,
+publishable products are ANALYSIS/methodology findings (all real, counter-intuitive, independent of any
+method winning): fixed-subspace ceiling · r=2 nonlinearity = under-training artifact · token_acc
+anti-correlated with real accuracy · large real-eval noise + multi-task transfer-dilution ·
+non-causal cross-token leaks future & breaks generation · ViT³-stability-mechanisms are necessary to
+port TTT · isolation makes per-sample test-time adaptation safe.
