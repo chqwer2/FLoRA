@@ -1,0 +1,184 @@
+\documentclass{article}       % swap to \usepackage{iclr2026_conference} style on Overleaf
+\usepackage{amsmath,amssymb,amsthm,bm,mathtools}
+\usepackage{booktabs}
+\usepackage[table]{xcolor}
+\usepackage{hyperref}
+\newcommand{\todo}[1]{\textcolor{red}{[\textbf{TODO}: #1]}}
+\newcommand{\todocite}{\textcolor{red}{[?]}}
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\x}{\bm{x}}\newcommand{\q}{\bm{q}}\newcommand{\bk}{\bm{k}}\newcommand{\vv}{\bm{v}}
+\newcommand{\W}{\bm{W}}\newcommand{\B}{\bm{B}}\newcommand{\SM}{\bm{S}}
+\DeclareMathOperator{\diag}{diag}
+\newtheorem{proposition}{Proposition}
+\newtheorem{lemma}{Lemma}
+
+\title{Test-Time Training as a Parameter-Efficient Adapter:\\ An Online, Consistent Fast-Weight Branch for OOD-Robust LLM Reasoning}
+\author{Hao Chen \todocite}
+\date{}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+Parameter-efficient fine-tuning (PEFT) such as LoRA learns a weight update that is \emph{fixed at test time}. We ask
+whether a PEFT module that instead performs \emph{test-time training} (TTT)---adapting its effective weights online, per
+input---can be more robust under distribution shift, where a fixed update cannot. A naive TTT adapter fails: we show it
+suffers a \emph{train/generation mismatch}, adapting to its own (possibly wrong) generated prefix and amplifying errors. We
+fix it with an online delta-rule fast-weight branch whose recurrence is \emph{identical} at training and autoregressive
+generation, has a learnable decay (not a prefix mean), and runs in $O(N)$. The branch realizes an input-conditional
+low-rank operator $\Delta\W(\x_{1:t})$ that no static PEFT can express (Prop.~\ref{prop:cond}), reducing to the frozen
+model at zero step size. On GSM8K-family reasoning with Llama-2-7B, the claim is in-distribution parity with LoRA and a
+\emph{growing} advantage as distribution shift increases. \textcolor{red}{(Core results RED---to run; see Sec.~5.)}
+\end{abstract}
+
+\section{Introduction}
+LoRA \todocite{} adapts a frozen weight $\W_0$ by a rank-$r$ update $\Delta\W=\B\bm{A}$ that is \emph{static}: the same for
+every test input. This is optimal when train and test distributions match, and increasingly suboptimal as they diverge---a
+fixed correction cannot use test-time evidence. Test-time training \todocite{} exploits exactly that evidence, updating
+parameters on a self-supervised objective computed from the test input itself.
+
+We ask a specific question: \emph{can test-time training serve as the PEFT mechanism for a frozen LLM, and does it buy
+robustness to distribution shift?} A direct attempt---bolt a TTT inner loop onto a frozen model as an additive branch---
+\emph{fails}: in our experiments it underperforms LoRA everywhere (Sec.~\ref{sec:diag}). We trace this to a concrete cause,
+a train/generation mismatch, and remove it. The fixed method is a small online fast-weight branch that (i) adapts per
+input, (ii) uses the \emph{same} recurrence at training and generation, and (iii) costs $O(N)$.
+
+\paragraph{Contributions.}
+\begin{enumerate}
+\item \textbf{TTT-as-PEFT with a consistency guarantee.} An additive fast-weight branch on a frozen LLM whose online
+delta-rule recurrence is identical in teacher-forced training and autoregressive decoding (Sec.~\ref{sec:method}), unlike
+the prefix-fit adapter it repairs.
+\item \textbf{A diagnosis and a fix.} We show the naive TTT adapter fails from a train/generation mismatch
+(Sec.~\ref{sec:diag}, Lemma~\ref{lem:mismatch}) and that the recurrence removes it by construction.
+\item \textbf{An input-conditional operator view and an OOD claim.} The branch realizes $\Delta\W(\x_{1:t})$ outside any
+static PEFT family (Prop.~\ref{prop:cond}); we test whether this yields robustness that grows with shift.
+\end{enumerate}
+
+\section{Related Work}
+\paragraph{PEFT.} LoRA \todocite{}, DoRA/AdaLoRA \todocite{}, adapters/IA$^3$ \todocite{}: all learn a \emph{static}
+update. \paragraph{Test-time training / adaptation.} TTT \todocite{}, TENT \todocite{}: adapt at test time but typically
+retrain model parameters or normalization, not as a frozen-LLM PEFT module. \paragraph{Fast weights / linear attention.}
+Delta rule \todocite{}, linear attention \todocite{}, DeltaNet/Gated DeltaNet \todocite{}, Mamba \todocite{}, TTT-Linear
+\todocite{}: our recurrence is of this family. \emph{Our novelty is the framing}---using it as an additive, train/inference-
+consistent PEFT branch on a frozen model for OOD robustness---not the recurrence itself. \todo{sharpen the delta vs each.}
+
+\section{Method}\label{sec:method}
+\paragraph{Branch.} Per adapted layer, augment the attention output with a gated branch on the (normalized) hidden state:
+\begin{equation}
+h_t = \mathrm{Attn}(\mathrm{LN}\,\x_t) + \bm{\gamma}\odot \B\,\bm{o}_t,\qquad \bm{o}_t=\SM_t\,\q_t,
+\end{equation}
+with $\q_t=\W_q\,\mathrm{LN}\,\x_t$, keys/values $\bk_t=\W_k(\cdot),\vv_t=\W_v(\cdot)\in\R^{r}$, up-projection
+$\B\in\R^{d\times r}$, per-channel gate $\bm{\gamma}$. The fast weights $\SM_t\in\R^{r\times r}$ are the adapted state.
+
+\paragraph{Online fast-weight recurrence (the fix).} $\SM_t$ is one online gradient step on the self-supervised
+reconstruction loss $\ell_t(\SM)=\tfrac12\|\SM\bk_t-\vv_t\|^2$, with learnable decay $\alpha\in(0,1)$ and step $\eta>0$:
+\begin{equation}
+\SM_t=(1-\alpha)\,\SM_{t-1}-\eta\,\nabla_{\SM}\ell_t(\SM_{t-1})
+     =(1-\alpha)\,\SM_{t-1}+\eta\,(\vv_t-\SM_{t-1}\bk_t)\,\bk_t^{\top},\qquad \SM_0=\bm 0.
+\label{eq:rec}
+\end{equation}
+\begin{proposition}[Train/inference consistency]\label{prop:consist}
+Equation~\eqref{eq:rec} defines $\SM_t$ as a function of $(\x_1,\dots,\x_t)$ only. Hence the branch output $\bm o_t$ is
+identical whether the prefix is teacher-forced (training) or self-generated (decoding); the map has no dependence on future
+or gold tokens. At $\eta=0$ (or $\bm\gamma=\bm0$) the branch vanishes and the model is the frozen backbone.
+\end{proposition}
+This is the property the prefix-fit adapter lacked: its state was a prefix \emph{mean} refit against the whole (gold-
+containing) sequence, so training and generation saw different states.
+\begin{proposition}[Input-conditional operator]\label{prop:cond}
+Unrolling \eqref{eq:rec}, $\bm o_t=\big(\sum_{s\le t}\eta(1-\alpha)^{t-s}(\vv_s-\SM_{s-1}\bk_s)\bk_s^{\top}\big)\q_t$, so
+the branch applies $\Delta\W_t=\B\,\SM_t\,\W_q$, an operator that depends on $\x_{1:t}$. No static $\Delta\W$ equals
+$\Delta\W_t$ for all inputs; the branch family is not contained in static PEFT. \todo{1-line proof; note $O(N)$ /
+chunkwise-parallel cost.}
+\end{proposition}
+
+\paragraph{Why robustness should grow with shift (thesis).} \todo{Proposition/argument: a static $\Delta\W$ minimizes
+expected train loss; under a shifted test distribution its excess risk grows with the shift, whereas the online update
+tracks the test sequence and its excess risk is bounded by the adaptation rate. Make precise or state as a hypothesis the
+experiments test.}
+
+\section{The naive adapter fails: diagnosis}\label{sec:diag}
+\begin{lemma}[Train/generation mismatch]\label{lem:mismatch}
+For a TTT state fit to the full teacher-forced sequence (prefix mean over gold tokens), the state used at generation step
+$t$ is computed from self-generated tokens $\hat\x_{<t}$, not gold; when $\hat\x_{<t}$ contains an error, the adapted state
+moves \emph{toward} reconstructing that error, increasing the probability of continuing it. The training objective never
+sees this regime. \todo{formalize as a distribution-shift-of-the-state argument; 3 lines.}
+\end{lemma}
+Empirically (\todo{cite our Table~\ref{tab:diag}}), the naive branch reaches low training loss ($0.19$ with a LoRA co-path)
+yet only $0.24$ test accuracy---a gap Eq.~\eqref{eq:rec} closes by construction.
+
+\section{Experiments}\label{sec:exp}
+\paragraph{Setup.} Llama-2-7B, GSM8K train; branch on \{attn\} (\todo{and MLP?}); AdamW, matched trainable budget vs LoRA.
+Accuracy = exact match under the first-\texttt{\#\#\#\#} protocol \todocite{}, decoded with the online recurrence (bs any).
+
+\begin{table}[t]\centering
+\caption{\textcolor{red}{TO RUN (core).} In-distribution parity. Consistent-TTT branch vs LoRA at matched budget, GSM8K,
+$\ge3$ seeds. Claim: $\ge$ LoRA (must clear the negative baseline of the naive branch).}
+\label{tab:indist}\rowcolors{2}{red!6}{red!6}
+\begin{tabular}{lccc}
+\toprule
+ & LoRA & naive-TTT (ours, prior) & \textcolor{red}{consistent-TTT (ours)}\\
+\midrule
+GSM8K & .33 & .24--.30 & \textcolor{red}{--}\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[t]\centering
+\caption{\textcolor{red}{TO RUN (the paper's thesis).} OOD robustness vs shift strength. Rows = increasing shift; report
+accuracy and the LoRA$\to$ours gap. Claim: the gap grows with shift.}
+\label{tab:ood}\rowcolors{2}{red!6}{red!6}
+\begin{tabular}{lccc}
+\toprule
+shift level & LoRA & \textcolor{red}{consistent-TTT} & \textcolor{red}{$\Delta$}\\
+\midrule
+GSM8K (none)            & .33 & \textcolor{red}{--} & \textcolor{red}{--}\\
+\textcolor{red}{GSM-Symbolic (mild)}  & \textcolor{red}{--} & \textcolor{red}{--} & \textcolor{red}{--}\\
+\textcolor{red}{GSM-Plus / perturbed} & \textcolor{red}{--} & \textcolor{red}{--} & \textcolor{red}{--}\\
+\textcolor{red}{numeric-range / length OOD} & \textcolor{red}{--} & \textcolor{red}{--} & \textcolor{red}{--}\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[t]\centering
+\fbox{\parbox{0.8\linewidth}{\centering\vspace{2mm}\textcolor{red}{\textbf{FIGURE 1 TO PRODUCE (money figure).} Accuracy
+vs.\ shift strength (x-axis), LoRA (flat/declining) vs consistent-TTT (declining slower). The widening gap IS the
+contribution.}\vspace{2mm}}}
+\caption{Robustness-vs-shift.}\label{fig:money}
+\end{figure}
+
+\begin{table}[t]\centering
+\caption{\textcolor{red}{TO RUN (causal isolation).} Is the robustness from test-time \emph{adaptation}? Compare
+consistent-TTT vs a state-frozen ablation ($\eta{=}0$, static branch of equal params) vs LoRA, on the OOD suite.}
+\label{tab:ablate}\rowcolors{2}{red!6}{red!6}
+\begin{tabular}{lcc}
+\toprule
+ & GSM8K & \textcolor{red}{OOD (avg)}\\
+\midrule
+LoRA & .33 & \textcolor{red}{--}\\
+\textcolor{red}{static branch ($\eta{=}0$)} & \textcolor{red}{--} & \textcolor{red}{--}\\
+\textcolor{red}{consistent-TTT ($\eta{>}0$)} & \textcolor{red}{--} & \textcolor{red}{--}\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[t]\centering
+\caption{\textcolor{red}{TO RUN (the fix works).} Naive prefix-fit branch vs consistent recurrence, in-dist + OOD, same
+budget. Shows the mismatch fix (Lemma~\ref{lem:mismatch}) is what turns the negative result positive.}
+\label{tab:diag}\rowcolors{2}{red!6}{red!6}
+\begin{tabular}{lcc}
+\toprule
+ & GSM8K & \textcolor{red}{OOD (avg)}\\
+\midrule
+naive prefix-fit (train loss .19) & .24 & \textcolor{red}{--}\\
+\textcolor{red}{consistent recurrence} & \textcolor{red}{--} & \textcolor{red}{--}\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{Conclusion}
+Static PEFT cannot use test-time evidence; a consistent online fast-weight branch can. We give the method, a proof of
+train/inference consistency, and a diagnosis-and-fix of why the naive version fails. \todo{one sentence once results land:
+the OOD-robustness verdict.}
+
+\bibliographystyle{plain}
+\end{document}
