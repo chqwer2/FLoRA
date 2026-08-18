@@ -58,11 +58,24 @@ static PEFT family (Prop.~\ref{prop:cond}); we test whether this yields robustne
 \paragraph{PEFT.} LoRA \todocite{}, DoRA/AdaLoRA \todocite{}, adapters/IA$^3$ \todocite{}: all learn a \emph{static}
 update. \paragraph{Test-time training / adaptation.} TTT \todocite{}, TENT \todocite{}: adapt at test time but typically
 retrain model parameters or normalization, not as a frozen-LLM PEFT module. \paragraph{Fast weights / linear attention.}
-Delta rule \todocite{}, linear attention \todocite{}, DeltaNet/Gated DeltaNet \todocite{}, Mamba \todocite{}, TTT-Linear
-\todocite{}: our recurrence is of this family. \emph{Our novelty is the framing}---using it as an additive, train/inference-
-consistent PEFT branch on a frozen model for OOD robustness---not the recurrence itself. \todo{sharpen the delta vs each.}
+The recurrence \eqref{eq:rec} is a gated delta rule \todocite{}, shared with linear attention \todocite{}, DeltaNet / Gated
+DeltaNet \todocite{}, Mamba \todocite{}, and TTT-Linear \todocite{}. Those works build a \emph{sequence-modeling backbone}
+trained from scratch to \emph{replace} attention. We use the same recurrence in a different role and make three claims none
+of them make: (i) it is a small \emph{additive PEFT branch on a frozen} pretrained LLM, not a backbone layer;
+(ii) \emph{train/inference consistency} is an explicit, proved property (Prop.~\ref{prop:consist}) motivated by a concrete
+failure of the alternative (Lemma~\ref{lem:mismatch}); (iii) the goal is \emph{OOD robustness}, for which we give a
+static-vs-adaptive excess-risk separation (Prop.~\ref{prop:ood}). The recurrence is borrowed; the PEFT-adaptation framing,
+the consistency guarantee, and the shift theory are ours.
 
 \section{Method}\label{sec:method}
+\begin{figure}[t]\centering
+\fbox{\parbox{0.82\linewidth}{\centering\vspace{2mm}\textcolor{red}{\textbf{FIGURE (schematic) TO PRODUCE.} A frozen
+decoder layer: attention (grey, frozen) with the additive branch (blue) in parallel. Inside the branch: $x_t\!\to\!(q,k,v)$,
+the online state $S_t$ updated by the delta rule \eqref{eq:rec} (recurrent arrow $S_{t-1}\!\to\!S_t$), output $o_t=S_tq_t$,
+up-projection $B$, gate $\gamma$. Contrast box: naive prefix-fit state (fit to full gold sequence) vs.\ our online state
+(same rule at train and decode).}\vspace{2mm}}}
+\caption{Consistent-TTT branch on a frozen layer.}\label{fig:arch}
+\end{figure}
 \paragraph{Branch.} Per adapted layer, augment the attention output with a gated branch on the (normalized) hidden state:
 \begin{equation}
 h_t = \mathrm{Attn}(\mathrm{LN}\,\x_t) + \bm{\gamma}\odot \B\,\bm{o}_t,\qquad \bm{o}_t=\SM_t\,\q_t,

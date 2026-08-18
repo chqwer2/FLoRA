@@ -34,6 +34,18 @@
 Remaining writing: Related Work delta-sharpening; method schematic figure; abstract can now cite Prop.OOD as the mechanism.
 Remaining (gating): RESULTS all RED — build consistent-TTT, run Tables 1-4 + Fig 1.
 
+## Iteration 3 done (novelty writing)
+- [x] Related Work sharpened: explicit 3-point delta vs delta-rule/DeltaNet/TTT-Linear/Mamba (backbone-layer vs additive
+  frozen-LLM PEFT; consistency as a proved property; OOD-robustness goal + excess-risk separation). Novelty defense set.
+- [x] Method schematic figure placeholder (fig:arch) added.
+Scores: Novelty 7.5->8, Math 8.5, Writing 8, Presentation 7. Results 3 (RED), Experiments 5.
+
+## Novelty writing is near-saturated. Remaining is:
+- Minor: abstract could name the mechanism (Prop.OOD) in one clause; intro schematic ref. (polish, ~1 loop)
+- GATING (not writing): build consistent-TTT (Eq.2) and run Tables 1-4 + Fig 1 (money). The paper cannot pass ICLR
+  without the in-dist parity + monotone OOD-robustness result. This needs cluster + author go-ahead.
+=> After ~1 polish loop, stop and hand to experiments (do not spin writing).
+
 ## Author/experiment note
 The consistent-TTT module (Eq.2) is NEW code — the repo's ttt_branch4.py is the teacher-forced version to be replaced.
 See EXPERIMENTS_TODO.md.
