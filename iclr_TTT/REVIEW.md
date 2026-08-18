@@ -63,3 +63,11 @@ Do NOT spin more writing loops — the innovation is written; the paper now need
 ## Author/experiment note
 The consistent-TTT module (Eq.2) is NEW code — the repo's ttt_branch4.py is the teacher-forced version to be replaced.
 See EXPERIMENTS_TODO.md.
+
+## EXPERIMENT PHASE — iter 1
+- [x] consistent-TTT implemented (ttt_consistent.py, chunkwise gated-linear-attention, learnable decay γ/η).
+- [x] CORRECTNESS VERIFIED: chunked core == naive sequential scan, max diff = 0.000e+00 (chunk 32/64/128). The O(N)
+  parallel form is exact — this also empirically confirms Prop.1 (train/inference use the identical recurrence).
+- [x] Build: 33.7M trainable (0.53%). Smoke had a grad-flag bug (smoke path only; train() is correct).
+- [ ] STEP1 (job 9643908): full train + gsm8k eval, in-dist parity vs LoRA (0.33) / naive branch (0.24-0.30). PENDING.
+Next: read STEP1 result -> fill Table indist -> STEP2 (fix vs naive) -> STEP3 OOD ladder.
