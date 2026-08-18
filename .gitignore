@@ -1,266 +1,187 @@
-# =========================
-# Hugging Face / ML Models
-# =========================
-
-# Model weights
-*.bin
-*.pt
-*.pth
-*.ckpt
-*.safetensors
-*.gguf
-*.onnx
-
-# Sharded model files
-*.bin.*
-*.safetensors.*
-
-# Tokenizers / vocab (optional – keep if you want reproducibility)
-tokenizer.json
-tokenizer.model
-vocab.json
-merges.txt
 
 # =========================
-# Hugging Face Cache
-# =========================
-
-# Default HF cache locations
-.cache/
-huggingface/
-hf_cache/
-.huggingface/
-
-# Explicit HF env paths
-**/hf_home/
-**/hf_cache/
-
-# =========================
-# Training Outputs
-# =========================
-
-# Checkpoints & logs
-checkpoints/
-checkpoint-*/
-runs/
-logs/
-lightning_logs/
-wandb/
-
-# TensorBoard
-events.out.tfevents.*
-
-# =========================
-# Datasets
-# =========================
-
-# Arrow / dataset caches
+*.*~
+*$py.class
+AgentLaboratory/
 *.arrow
+# Arrow / dataset caches
+#  before PyInstaller builds the exe, so as to inject date/other infos into it.
+*.bin
+*.bin.*
+build/
+# Byte-compiled / optimized / DLL files
+.cache
+.cache/
+celerybeat-schedule
+# celery beat schedule file
+# C extensions
+checkpoint-*/
+checkpoints/
+# Checkpoints & logs
+*.ckpt
+.claude/
+*.cover
+.coverage
+.coverage.*
+coverage.xml
+#ctags
+# data
+/data
 dataset_cache/
+datasets
 datasets/
-
-# =========================
-# Python
-# =========================
-
-__pycache__/
-*.py[cod]
-*.so
+# Datasets
+db.sqlite3
+debug.env
+# Default HF cache locations
+develop-eggs/
+dist/
+# Distribution / packaging
+# Django stuff:
+.dmypy.json
+dmypy.json
+docs/_build/
+downloads/
+.DS_Store
+*.egg
 *.egg-info/
 .eggs/
+eggs/
+# emacs
 .env
-.venv
-venv/
-
-# =========================
-# Jupyter
-# =========================
-
-.ipynb_checkpoints/
-
-# =========================
-# OS / Editor
-# =========================
-
-.DS_Store
-Thumbs.db
-.vscode/
+env/
+ENV/
+env.bak/
+# Environments
+events.out.tfevents.*
+# examples
+/examples/**/*.args
+/examples/rag/sweep
+/examples/runs
+# Explicit HF env paths
+# Flask stuff:
+*.gguf
+**/hf_cache/
+hf_cache/
+**/hf_home/
+htmlcov/
+.huggingface/
+huggingface/
+# Hugging Face Cache
+# Hugging Face / ML Models
+.hypothesis/
+.idea
 .idea/
-
-# =========================
-# Temporary / Misc
-# =========================
-
-tmp/
-temp/
-*.log
-
-
 # Initially taken from Github's Python gitignore file
-
-# Byte-compiled / optimized / DLL files
+.installed.cfg
+# Installer logs
+instance/
+.ipynb_checkpoints
+.ipynb_checkpoints/
+# IPython
+ipython_config.py
+# Jupyter
+# Jupyter Notebook
+lang_code_data/
+lib/
+lib64/
+lightning_logs/
+local_settings.py
+# .lock
+*.lock
+*.log
+logs/
+*.manifest
+MANIFEST
+merges.txt
+# mkdocs documentation
+*.mo
+# Models
+# Model weights
+# mypy
+.mypy_cache/
+nosetests.xml
+.nox/
+*.onnx
+# OS / Editor
+parts/
+pip-delete-this-directory.txt
+pip-log.txt
+*.pot
+# pre-commit
+.pre-commit*
+proc_data
+profile_default/
+*.pt
+*.pth
+# PyBuilder
 __pycache__/
+# Pycharm
 *.py[cod]
-*$py.class
-
-# C extensions
+# pyenv
+# PyInstaller
+.pyre/
+# Pyre type checker
+.pytest_cache/
+# Python
+.Python
+.python-version
+.ropeproject
+# Rope project settings
+runs
+runs/
+/runs_old
+*.safetensors
+*.safetensors.*
+# SageMath parsed files
+*.sage.py
+.scrapy
+# Scrapy stuff:
+sdist/
+serialization_dir
+# Sharded model files
+/site
+**/slurm*
+**/snap
 *.so
-
+*.spec
+# Sphinx documentation
+.spyderproject
+# Spyder project settings
+.spyproject
+.*.swp
+tags
+target/
+temp/
+# Temporary / Misc
+# TensorBoard
+tensorflow_code
 # tests and logs
 tests/fixtures/*
 !tests/fixtures/sample_text_no_unicode.txt
-logs/
-lightning_logs/
-lang_code_data/
-**/slurm*
-**/wandb
-**/snap
-datasets
-
-# Distribution / packaging
-.Python
-build/
-develop-eggs/
-dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
-*.egg-info/
-.installed.cfg
-*.egg
-MANIFEST
-
-# PyInstaller
-#  Usually these files are written by a python script from a template
-#  before PyInstaller builds the exe, so as to inject date/other infos into it.
-*.manifest
-*.spec
-
-# Installer logs
-pip-log.txt
-pip-delete-this-directory.txt
-
-# Unit test / coverage reports
-htmlcov/
-.tox/
-.nox/
-.coverage
-.coverage.*
-.cache
-nosetests.xml
-coverage.xml
-*.cover
-.hypothesis/
-.pytest_cache/
-
-# Translations
-*.mo
-*.pot
-
-# Django stuff:
-*.log
-local_settings.py
-db.sqlite3
-
-# Flask stuff:
-instance/
-.webassets-cache
-
-# Scrapy stuff:
-.scrapy
-
-# Sphinx documentation
-docs/_build/
-
-# PyBuilder
-target/
-
-# Jupyter Notebook
-.ipynb_checkpoints
-
-# IPython
-profile_default/
-ipython_config.py
-
-# pyenv
-.python-version
-
-# celery beat schedule file
-celerybeat-schedule
-
-# SageMath parsed files
-*.sage.py
-
-# Environments
-.env
-.venv
-env/
-venv/
-ENV/
-env.bak/
-venv.bak/
-
-# Spyder project settings
-.spyderproject
-.spyproject
-
-# Rope project settings
-.ropeproject
-
-# mkdocs documentation
-/site
-
-# mypy
-.mypy_cache/
-.dmypy.json
-dmypy.json
-
-# Pyre type checker
-.pyre/
-
-# vscode
-.vs
-.vscode
-
-# Pycharm
-.idea
-
 # TF code
-tensorflow_code
-
-# Models
-proc_data
-
-# examples
-runs
-/runs_old
-/wandb
-/examples/runs
-/examples/**/*.args
-/examples/rag/sweep
-
-# data
-/data
-serialization_dir
-
-# emacs
-*.*~
-debug.env
-
+Thumbs.db
+tmp/
+tokenizer.json
+tokenizer.model
+# Tokenizers / vocab (optional – keep if you want reproducibility)
+.tox/
+# Training Outputs
+# Translations
+# Unit test / coverage reports
+#  Usually these files are written by a python script from a template
+var/
+.venv
+venv/
+venv.bak/
 # vim
-.*.swp
-
-#ctags
-tags
-
-# pre-commit
-.pre-commit*
-
-# .lock
-*.lock
+vocab.json
+.vs
+# vscode
+.vscode
+.vscode/
+**/wandb
+/wandb
+wandb/
+.webassets-cache
+wheels/

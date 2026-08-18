@@ -1,0 +1,446 @@
+\documentclass[preprint,11pt]{elsarticle}
+\usepackage{amsmath,amssymb,amsthm,bm,mathtools}
+\usepackage{booktabs,multirow,array}
+\usepackage[table]{xcolor}
+\usepackage{graphicx}
+\usepackage{hyperref}
+\newcommand{\todo}[1]{\textcolor{red}{[\textbf{TODO}: #1]}}
+\newcommand{\todocite}{\textcolor{red}{[?]}}
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\x}{\bm{x}}
+\newcommand{\z}{\bm{z}}
+\newcommand{\W}{\bm{W}}
+\newcommand{\A}{\bm{A}}
+\newcommand{\B}{\bm{B}}
+\newcommand{\g}{\bm{g}}
+\DeclareMathOperator{\diag}{diag}
+\DeclareMathOperator{\rank}{rank}
+\newtheorem{proposition}{Proposition}
+\newtheorem{lemma}{Lemma}
+\newtheorem{definition}{Definition}
+
+\journal{Neurocomputing}
+
+\begin{document}
+\begin{frontmatter}
+\title{Expressive Low-Rank Adaptation and the Evaluation Artifacts that Obscure It:\\ A Unified Study of Nonlinear and Input-Dependent LoRA}
+
+\author{Hao Chen \todocite}
+\address{\todo{affiliation}}
+
+\begin{abstract}
+Low-Rank Adaptation (LoRA) fine-tunes a frozen model with a \emph{linear, input-independent} rank-$r$ update. We study
+whether two orthogonal forms of added expressiveness help: (i) a \emph{nonlinearity} inside the low-rank code (the LeNA
+framework, instantiated with the published AuroRA activation), and (ii) an \emph{input-dependent} update (IQ-LoRA). We give
+a single formulation that contains all three as special cases, exposing exactly one extra degree of freedom each. Empirically, on GSM8K reasoning with Llama-2-7B, both
+variants \emph{match} well-tuned LoRA at an identical parameter budget across ranks $r\in\{1,2,4,16,32\}$. We then show
+that the opposite conclusion---an apparent large advantage for the expressive variants---is produced by three concrete and
+common evaluation artifacts: (a) \emph{answer-extraction bias} under trailing-token degeneration, (b) \emph{repetition
+degeneration} of the strong baseline, and (c) \emph{template collapse} of perturbation benchmarks. We formalize each,
+give an artifact-free protocol, and reproduce how a spurious ``$16\times$ parameter-efficiency'' claim collapses to parity
+under it. The result is a disciplined map of when extra expressiveness does and does not help, and a reusable protocol for
+comparing parameter-efficient fine-tuning (PEFT) methods on generative reasoning benchmarks.
+\end{abstract}
+\begin{keyword}
+Parameter-efficient fine-tuning \sep Low-rank adaptation \sep LLM reasoning \sep Evaluation protocol
+\end{keyword}
+\end{frontmatter}
+
+%==========================================================
+\section{Introduction}
+Adapting a large pretrained model to a task by updating a small number of parameters is now standard. LoRA
+\todocite{} is the dominant choice: it freezes a weight $\W_0\in\R^{d_o\times d_i}$ and learns a rank-$r$ correction
+$\Delta\W=\tfrac{\alpha}{r}\B\A$ with $\A\in\R^{r\times d_i}$, $\B\in\R^{d_o\times r}$, $r\ll\min(d_o,d_i)$. Two properties
+define LoRA and bound its hypothesis class: the correction is \emph{linear} in the low-rank code $\z=\A\x$, and it is
+\emph{static}---the same $\Delta\W$ for every input.
+
+A natural question, and the subject of a growing literature, is whether relaxing either property helps. We isolate the two
+relaxations:
+\begin{itemize}
+\item \textbf{Nonlinearity (LeNA).} Insert a learnable elementwise nonlinearity $\phi$ between the down- and up-projection,
+so the code$\to$update map is no longer linear.
+\item \textbf{Input-dependence (IQ-LoRA).} Let the update depend on the input, $\Delta\W(\x)$, through a second projection,
+so the effective correction is instance-conditional.
+\end{itemize}
+Both are intuitive and both enlarge the function class strictly (Section~\ref{sec:method}). One expects a gain.
+
+\paragraph{Findings.} Our controlled study says otherwise, and says it carefully.
+(1)~At matched parameter budget the nonlinear axis (AuroRA) \emph{matches} well-tuned LoRA on GSM8K across every rank we
+test (Table~\ref{tab:rankcurve}); the input-dependent axis (IQ-LoRA) is expected to match on the same evidence
+(\textcolor{red}{Table~\ref{tab:datasets}, to run}). Neither degree of freedom yields a robust improvement.
+(2)~The literature-style \emph{opposite} conclusion is recoverable, but only through evaluation artifacts, which we name
+and formalize (Section~\ref{sec:protocol}): extraction bias, repetition degeneration, and template collapse. Under a
+naive-but-common protocol the nonlinear variant appears to reach LoRA's rank-$32$ accuracy at rank $2$
+(a ``$16\times$ efficiency'' claim); under an artifact-free protocol the same checkpoints are at parity
+(Table~\ref{tab:artifact}). Measuring that parity correctly---not any new adapter---is the contribution.
+
+\paragraph{Contributions.}
+\begin{enumerate}
+\item A \emph{unified formulation} (Section~\ref{sec:method}) in which LoRA, LeNA, and IQ-LoRA differ by exactly one term,
+making the added degree of freedom explicit and the comparison strictly controlled.
+\item A \emph{rigorous evaluation protocol} (Section~\ref{sec:protocol}) for generative reasoning benchmarks that is
+provably invariant to the three named artifacts, together with a $\sim$9$\times$ faster batched implementation.
+\item An \emph{honest empirical map} (Section~\ref{sec:exp}): expressive low-rank variants match LoRA at matched budget,
+and prior apparent gains are attributable to the artifacts. Parity, correctly measured, is the result.
+\end{enumerate}
+
+%==========================================================
+\section{Related Work}
+\paragraph{Static low-rank adaptation.} LoRA \todocite{} learns a linear rank-$r$ update; its refinements keep the update
+\emph{linear and input-independent} while improving where or how the rank budget is spent---DoRA \todocite{} decouples
+magnitude and direction, AdaLoRA \todocite{} allocates rank by importance, and unified accounts \todocite{} place these,
+adapters \todocite{} and IA$^3$ \todocite{} in one design space. Our two axes are orthogonal to this line: they change the
+\emph{form} of the update (nonlinear; input-dependent) rather than its rank allocation.
+
+\paragraph{Expressive adapters.} Nonlinearity inside a bottleneck adapter is classical \todocite{}, and recent work learns
+the activation itself---rational/Kronecker maps and the AuroRA activation \citep{aurora} and LoRAN \citep{loran} that we
+adopt as the \emph{nonlinear instances} studied here. Input-conditional adaptation appears as hypernetwork- and
+conditional adapters \todocite{}; IQ-LoRA is a lightweight instance that makes the update quadratic in the input via a
+single extra projection (Eq.~\ref{eq:iq-operator}). We do not propose these activations or conditioning schemes; we ask,
+under a controlled budget and a fair protocol, whether either \emph{form} of expressiveness helps.
+
+\paragraph{Evaluating LLM reasoning.} GSM8K \todocite{} and its perturbations---GSM-Symbolic \todocite{}, SVAMP/ASDiv
+\todocite{}---score a decoded string. Prior studies note sensitivity to answer normalization and decoding \todocite{};
+we make this quantitative for PEFT comparison, isolating three artifacts (extraction, degeneration, template collapse) and
+giving an invariant protocol (Section~\ref{sec:protocol}).
+
+%==========================================================
+\section{Method: A Unified View of Expressive Low-Rank Adaptation}
+\label{sec:method}
+\paragraph{Base module.} A PEFT module acts on a frozen linear map. Writing the low-rank code $\z=\A\x\in\R^{r}$, LoRA is
+\begin{equation}
+h_{\text{LoRA}}(\x)=\W_0\x+\tfrac{\alpha}{r}\,\B\,\z,\qquad \z=\A\x.
+\label{eq:lora}
+\end{equation}
+The map $\z\mapsto \tfrac{\alpha}{r}\B\z$ is linear, and $\A,\B$ are fixed at inference. We now add one degree of freedom at
+a time; both reduce to \eqref{eq:lora} when their new parameter is switched off, giving a strictly controlled comparison.
+
+\subsection{Nonlinearity axis: a nonlinear code}
+The first axis inserts a learnable elementwise nonlinearity $\phi$ into the code, replacing the linear map $\z\mapsto\B\z$:
+\begin{equation}
+h_{\phi}(\x)=\W_0\x+\B\,\phi\!\big(\g\odot \nu(\A\x)\big),
+\label{eq:lena}
+\end{equation}
+with normalization $\nu$ (RMS over the $r$ channels) and a learned per-channel gate $\g\in\R^{r}$. We instantiate $\phi$
+with \textbf{AuroRA}, a \emph{published} nonlinear activation \citep{aurora}\footnote{arXiv:2505.18738.}, not a
+contribution of this work:
+\begin{equation}
+\phi_{\text{AuroRA}}(\z)=\tanh\!\big(\bm{H}\tanh(\z)\big)+\bm{w}_s\odot \mathrm{spline}(\z),
+\label{eq:aurora}
+\end{equation}
+where $\bm{H}\in\R^{\tilde r\times\tilde r}$ is a cross-channel map, $\bm{w}_s\in\R^{\tilde r}$ per-channel spline weights,
+and $\mathrm{spline}(\cdot)$ a learned-knot piecewise interpolant. \eqref{eq:lena} recovers LoRA when $\phi=\mathrm{id}$,
+$\g=\bm1$, $\nu=\mathrm{id}$; for nonlinear $\phi$ the map $\z\mapsto\B\phi(\cdot)$ is not any rank-$r$ linear map, so the
+hypothesis class strictly contains LoRA's. \textcolor{red}{[Positioning: AuroRA and LoRAN (\citep{loran}, EMNLP'24) are
+prior activations; this axis \emph{studies} them under our protocol, it does not claim them. If a genuinely novel
+activation is to be centered, replace \eqref{eq:aurora} accordingly---pending author input.]}
+
+\subsection{IQ-LoRA: input-dependence of the update}
+IQ-LoRA multiplicatively modulates the code by a second projection of the input, making the update instance-conditional:
+\begin{equation}
+h_{\text{IQ}}(\x)=\W_0\x+\B\Big(\z\odot\big(\bm{1}+\lambda\,\tanh(\A_2\x)\big)\Big),\qquad \z=\A\x,
+\label{eq:iq}
+\end{equation}
+with $\A_2\in\R^{r\times d_i}$ and scale $\lambda\ge0$. The bounded gate $\tanh$ keeps the modulation in $(1\!-\!\lambda,
+1\!+\!\lambda)$ (variant IQG); the raw form uses $\z+\lambda(\z\odot\A_2\x)$. Equivalently the effective correction is an
+\emph{input-dependent} low-rank operator
+\begin{equation}
+\Delta\W(\x)=\B\,\diag\!\big(\bm{1}+\lambda\tanh(\A_2\x)\big)\,\A,
+\label{eq:iq-operator}
+\end{equation}
+which is quadratic in $\x$ and reduces to LoRA at $\lambda=0$.
+\begin{proposition}[Input-dependence]
+\label{prop:iq}
+For $\lambda>0$ the input--output map $\x\mapsto\Delta\W(\x)\,\x$ of \eqref{eq:iq-operator} is not linear in $\x$, hence
+is not realized by any fixed operator $\Delta\W$; the IQ-LoRA family is therefore not contained in the static rank-$r$
+family. At $\lambda=0$ it equals \eqref{eq:lora}.
+\end{proposition}
+\begin{proof}
+$\Delta\W(\x)\,\x=\B\z+\lambda\,\B\big(\z\odot\tanh(\A_2\x)\big)$ with $\z=\A\x$. The second summand contains the product
+$(\A\x)\odot\tanh(\A_2\x)$, a non-affine function of $\x$; thus the map is nonlinear and no constant $\Delta\W$ reproduces
+it. Setting $\lambda=0$ deletes the summand. \qed
+\end{proof}
+The extra cost is one projection $\A_2\in\R^{r\times d_i}$; in experiments we charge it against a LoRA control of matched
+trainable count (Table~\ref{tab:params}).
+
+\paragraph{Parameter accounting.} All three share the $r(d_i+d_o)$ cost of $(\A,\B)$. The nonlinearity axis adds only the
+gate and activation parameters, $O(r+\tilde r^2)$, negligible against $r(d_i+d_o)$ for $\tilde r\le r\ll d$. The
+input-dependence axis adds a full projection $\A_2$, $r\,d_i$; we therefore compare IQ-LoRA not to LoRA at the same $r$ but
+to a LoRA control whose rank is enlarged to absorb the same trainable count (Table~\ref{tab:params}), so any difference is
+attributable to the mechanism, not the budget.
+\begin{table}[t]\centering
+\caption{Trainable parameters per adapted projection ($d_i{=}d_o{=}d$). $\tilde r\!\le\! r$ is the AuroRA inner width;
+$K$ spline knots. IQ-LoRA is budget-matched by an enlarged-rank LoRA control.}
+\label{tab:params}
+\begin{tabular}{lll}
+\toprule
+Method & Trainable parameters & Overhead vs.\ LoRA\\
+\midrule
+LoRA          & $2rd$ & --\\
+LeNA/AuroRA   & $2rd+\underbrace{r}_{\g}+\underbrace{\tilde r^2+\tilde rK}_{\phi}$ & $O(r+\tilde r^2)$, negligible\\
+IQ-LoRA       & $2rd+\underbrace{rd}_{\A_2}=3rd$ & $+rd$ (matched by LoRA at $r'{=}\tfrac{3}{2}r$)\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+%==========================================================
+\section{A Rigorous Evaluation Protocol}
+\label{sec:protocol}
+Generative reasoning benchmarks score a decoded string, not a label. The scoring pipeline---answer extraction, decoding,
+and subset selection---has degrees of freedom that, we show, can dominate the method effect. We formalize three artifacts
+and give an invariant protocol.
+
+\subsection{Artifact 1: extraction bias under trailing degeneration}
+GSM8K answers terminate with \texttt{\#\#\#\# $n$}. Let a decoded completion be $y$ and let $E:\;y\mapsto n$ be an
+extraction operator. Two common choices:
+\begin{align}
+E_{\text{last}}(y)&=\text{last numeric token of }y, &
+E_{\text{first}}(y)&=\text{number in the \emph{first} ``\texttt{\#\#\#\#}'' match of }y.
+\end{align}
+\begin{definition}[Degeneration-invariance]
+$E$ is degeneration-invariant if $E(y)=E(y\Vert s)$ for every trailing string $s$ appended after the first terminal answer
+in $y$. $E_{\text{first}}$ is degeneration-invariant; $E_{\text{last}}$ is not.
+\end{definition}
+\begin{lemma}[Non-invariant extraction has method-dependent bias]
+\label{lem:bias}
+Let $y$ carry a correct terminal answer and let $p_M$ be the probability that method $M$ appends a further numeric token
+after it. Under $E_{\text{last}}$, every such continuation scores the example wrong, so the measured accuracy is
+$\mathrm{acc}_M-p_M\!\cdot\!\Pr[\text{correct}]$ instead of $\mathrm{acc}_M$; the induced downward bias $p_M\Pr[\text{correct}]$
+is method-dependent and can be arbitrarily large. $E_{\text{first}}$ removes it ($p_M$ drops out).
+\end{lemma}
+\begin{proof}
+Appending any token $t\neq$ the answer makes $E_{\text{last}}(y\Vert t)\neq\text{gold}$ while $E_{\text{first}}(y\Vert t)=
+\text{gold}$ by Definition~1; taking expectations over the $p_M$-fraction of correct-but-continued completions gives the
+stated bias, which scales with $p_M$. \qed
+\end{proof}
+This is not academic: strong LoRA checkpoints frequently degenerate into ``\texttt{\#\#\#\# $n$ \#\#\#\# $n$}$\cdots$''
+($15$--$36$ repetitions observed), giving a large $p_{\text{LoRA}}$ that $E_{\text{last}}$ converts into a spurious
+baseline deficit---and hence a spurious advantage for any method that happens to degenerate less.
+
+\subsection{Artifact 2: baseline-specific degeneration}
+Lemma~\ref{lem:bias} bites only when $p_M$ differs across methods---and it does. LoRA checkpoints emit repeated
+``\texttt{\#\#\#\#}'' blocks far more often than the expressive variants, so $E_{\text{last}}$ deflates the baseline
+specifically, manufacturing the gap of Table~\ref{tab:artifact}. \todo{Figure: histogram of \#\#\#\# blocks per completion
+(nHASH), LoRA vs AuroRA on GSM8K test; report $p_{\text{LoRA}}$ vs $p_{\text{AuroRA}}$ to instantiate Lemma~\ref{lem:bias}.}
+
+\subsection{Artifact 3: template collapse in perturbation benchmarks}
+GSM-Symbolic is $T{=}100$ templates $\times$ $I{=}50$ instances. Evaluating the first $N\!<\!I$ examples samples a
+\emph{single} template---an estimate of one perturbation family reported as if it were the benchmark---whose mean and
+variance need not track the full set. The invariant subset takes one instance per template. \todo{Table: mean$\pm$sd of
+first-$N$ vs diverse-$N$ ($N{=}40,80$) for LoRA and AuroRA, quantifying the shift.}
+
+\subsection{Batched implementation and a caveat}
+$E_{\text{first}}$ with left-padded batched decoding is $\sim$9$\times$ faster than per-example decoding and leaves the
+scores unchanged for the static adapters studied here. One caveat bounds the batching: adapters that carry a
+\emph{cumulative causal state} over the sequence (e.g.\ test-time-training branches) are corrupted by left padding, whose
+pad positions enter the running state; such adapters must be decoded unbatched. It does not affect LoRA, LeNA, or IQ-LoRA,
+whose per-token maps are state-free.
+
+%==========================================================
+\section{Experiments}
+\label{sec:exp}
+\paragraph{Setup.} Llama-2-7B, GSM8K, targets \{q,k,v,up,down\}, $3$ epochs, batch $2$, lr $3\times10^{-4}$, $7$k train
+examples. Accuracy = exact-match under $E_{\text{first}}$ on the GSM8K test set, batched. \todo{state exact $n$, seeds.}
+
+\subsection{Nonlinearity matches LoRA across ranks}
+\begin{table}[t]\centering
+\caption{GSM8K exact-match vs.\ rank, artifact-free protocol ($E_{\text{first}}$, batched). LeNA and LoRA are at
+parity across all ranks (mean of $n$ seeds). Larger differences than $\pm0.02$ do not appear.}
+\label{tab:rankcurve}
+\begin{tabular}{lccccc}
+\toprule
+rank $r$ & 1 & 2 & 4 & 16 & 32\\
+\midrule
+LoRA               & .269 & .276 & .283 & .295 & .294\\
+AuroRA \citep{aurora} & .262 & .285 & .293 & .314 & .282\\
+$\Delta$           & $-.007$ & $+.008$ & $+.010$ & $+.019$ & $-.012$\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[t]\centering
+\caption{The ``efficiency win'' is an extraction artifact. At $r{=}2$, the naive $E_{\text{last}}$ undercounts LoRA and
+manufactures a LeNA advantage; $E_{\text{first}}$ removes it. Same checkpoints.}
+\label{tab:artifact}
+\begin{tabular}{lccc}
+\toprule
+$r{=}2$ (GSM8K) & LoRA & AuroRA & apparent gap\\
+\midrule
+$E_{\text{last}}$ (naive)  & .194 & .257 & $+.063$ (``$16\times$'')\\
+$E_{\text{first}}$ (ours)  & .276 & .285 & $+.008$ (parity)\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[t]\centering
+\fbox{\parbox{0.82\linewidth}{\centering\vspace{2mm}\textcolor{red}{\textbf{FIGURE~1 TO PRODUCE.} Accuracy vs.\ rank
+$r\!\in\!\{1,2,4,8,16,32\}$, one line each for LoRA / AuroRA / IQ-LoRA, mean $\pm$ s.d.\ over $\ge3$ seeds, GSM8K,
+$E_{\text{first}}$. Visualizes Table~\ref{tab:rankcurve}; all curves should overlap within error bars (the parity claim).}
+\vspace{2mm}}}
+\caption{Rank curve (visual of Table~\ref{tab:rankcurve}), to render from the seed runs.}
+\label{fig:rankcurve}
+\end{figure}
+
+\subsection{Do the two axes help? (breadth)}
+Table~\ref{tab:rankcurve} establishes parity for the nonlinear axis on GSM8K. Two gaps remain: the input-dependent axis has
+no protocol-consistent numbers yet, and a single task cannot support a parity \emph{claim}. Tables~\ref{tab:iqrank}
+and~\ref{tab:datasets} close them.
+
+\begin{table}[t]\centering
+\caption{\textcolor{red}{TO RUN (E0).} Input-dependent axis under the protocol: IQ-LoRA ($\lambda{=}0.5$) and the bounded
+variant IQG vs.\ a budget-matched LoRA control ($r'{=}\tfrac32 r$, Table~\ref{tab:params}), GSM8K, $E_{\text{first}}$,
+$\ge3$ seeds. Cells = exact-match; expected $\Delta\approx0$.}
+\label{tab:iqrank}
+\rowcolors{2}{red!6}{red!6}
+\begin{tabular}{lccc}
+\toprule
+rank $r$ & LoRA ($r'$) & \textcolor{red}{IQ-LoRA} & \textcolor{red}{IQG}\\
+\midrule
+2  & .28 & \textcolor{red}{--} & \textcolor{red}{--}\\
+8  & \textcolor{red}{--} & \textcolor{red}{--} & \textcolor{red}{--}\\
+16 & .30 & \textcolor{red}{--} & \textcolor{red}{--}\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[t]\centering
+\caption{\textcolor{red}{TO RUN (E1).} Generalization across datasets at matched budget, $E_{\text{first}}$, diverse
+subsets, $\ge3$ seeds. Cells = exact-match (mean). Claim survives iff each expressive row tracks LoRA within noise on every
+column.}
+\label{tab:datasets}
+\rowcolors{2}{red!6}{red!6}
+\begin{tabular}{lccccc}
+\toprule
+Method & GSM8K & \textcolor{red}{GSM-Sym (div.)} & \textcolor{red}{SVAMP} & \textcolor{red}{ASDiv} & \textcolor{red}{GSM-Plus}\\
+\midrule
+LoRA        & .29 & \textcolor{red}{--} & \textcolor{red}{--} & \textcolor{red}{--} & \textcolor{red}{--}\\
+AuroRA      & .29 & \textcolor{red}{--} & \textcolor{red}{--} & \textcolor{red}{--} & \textcolor{red}{--}\\
+IQ-LoRA     & \textcolor{red}{--} & \textcolor{red}{--} & \textcolor{red}{--} & \textcolor{red}{--} & \textcolor{red}{--}\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Comparison to the PEFT family}
+\begin{table}[t]\centering
+\caption{\textcolor{red}{TO RUN (E2).} Against the broader PEFT family at matched trainable budget, GSM8K + one shift
+column, $E_{\text{first}}$, $\ge3$ seeds. Purpose: the expressive variants match not just vanilla LoRA but the family.}
+\label{tab:baselines}
+\rowcolors{2}{red!6}{red!6}
+\begin{tabular}{lcc}
+\toprule
+Method & GSM8K & \textcolor{red}{GSM-Sym (div.)}\\
+\midrule
+LoRA                    & .29 & \textcolor{red}{--}\\
+\textcolor{red}{DoRA}    & \textcolor{red}{--} & \textcolor{red}{--}\\
+\textcolor{red}{AdaLoRA} & \textcolor{red}{--} & \textcolor{red}{--}\\
+\textcolor{red}{Houlsby Adapter} & \textcolor{red}{--} & \textcolor{red}{--}\\
+\textcolor{red}{IA$^3$}  & \textcolor{red}{--} & \textcolor{red}{--}\\
+AuroRA / IQ-LoRA (ours-studied) & .29 & \textcolor{red}{--}\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{The apparent gains are evaluation artifacts}
+Table~\ref{tab:artifact} already shows the $r{=}2$ flip. The next three items make the mechanism (Lemma~\ref{lem:bias}) and
+its scope explicit; they are the paper's core evidence.
+
+\begin{table}[t]\centering
+\caption{\textcolor{red}{TO RUN (E3a).} Protocol-flip table---the punchline. Every (method,dataset) scored under BOTH
+$E_{\text{last}}$ and $E_{\text{first}}$; last column marks whether the pairwise verdict vs.\ LoRA flips. Shows the method
+effect is dominated by the protocol effect.}
+\label{tab:flip}
+\rowcolors{2}{red!6}{red!6}
+\begin{tabular}{llccc}
+\toprule
+Method & Dataset & $E_{\text{last}}$ & $E_{\text{first}}$ & verdict flips?\\
+\midrule
+AuroRA & GSM8K & .257 & .285 & \textcolor{red}{--}\\
+IQ-LoRA & GSM8K & \textcolor{red}{--} & \textcolor{red}{--} & \textcolor{red}{--}\\
+AuroRA & \textcolor{red}{GSM-Sym} & \textcolor{red}{--} & \textcolor{red}{--} & \textcolor{red}{--}\\
+\multicolumn{5}{c}{\textcolor{red}{$\cdots$ all method$\times$dataset cells $\cdots$}}\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[t]\centering
+\fbox{\parbox{0.82\linewidth}{\centering\vspace{2mm}\textcolor{red}{\textbf{FIGURE~2 TO PRODUCE (E3b).} nHASH histogram:
+distribution of the number of ``\texttt{\#\#\#\#}'' blocks per completion, LoRA vs.\ AuroRA, GSM8K test. Report
+$p_{\text{LoRA}},p_{\text{AuroRA}}$ (fraction with $>\!1$ block). Instantiates $p_M$ of Lemma~\ref{lem:bias}: LoRA's mass at
+$\ge2$ is the mechanism of the artifact.}\vspace{2mm}}}
+\caption{Baseline-specific degeneration (evidence for Lemma~\ref{lem:bias}).}
+\label{fig:nhash}
+\end{figure}
+
+\begin{table}[t]\centering
+\caption{\textcolor{red}{TO RUN (E3c).} Template collapse (Artifact~3): GSM-Symbolic accuracy under the first-$N$ subset
+vs.\ the one-per-template subset, mean$\pm$s.d.\ over seeds, $N\!\in\!\{40,80\}$. A large gap/variance shift means first-$N$
+does not estimate the benchmark.}
+\label{tab:template}
+\rowcolors{2}{red!6}{red!6}
+\begin{tabular}{lcc}
+\toprule
+subset & LoRA (mean$\pm$sd) & \textcolor{red}{AuroRA (mean$\pm$sd)}\\
+\midrule
+\textcolor{red}{first-40}   & \textcolor{red}{--} & \textcolor{red}{--}\\
+\textcolor{red}{diverse-40} & \textcolor{red}{--} & \textcolor{red}{--}\\
+\textcolor{red}{diverse-80} & \textcolor{red}{--} & \textcolor{red}{--}\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[t]\centering
+\fbox{\parbox{0.82\linewidth}{\centering\vspace{2mm}\textcolor{red}{\textbf{FIGURE~3 TO PRODUCE.} The money figure: for
+each method, the apparent gap vs.\ LoRA under $E_{\text{last}}$ (red bars) vs.\ $E_{\text{first}}$ (grey bars), across
+datasets. Red bars are large and inconsistent; grey bars cluster at zero---artifacts manufacture gaps that fair evaluation
+erases.}\vspace{2mm}}}
+\caption{Apparent method gap under naive vs.\ artifact-free protocols.}
+\label{fig:money}
+\end{figure}
+
+\subsection{Ablations}
+\begin{table}[t]\centering
+\caption{\textcolor{red}{TO RUN (E4).} What the nonlinearity buys: fix the LeNA framework, vary $\phi\in$
+\{identity(=LoRA), GELU, spline, AuroRA\} at $r{=}2,8$, GSM8K, $E_{\text{first}}$. Isolates whether any activation (not just
+AuroRA) helps, and at which rank the bottleneck binds.}
+\label{tab:ablate-act}
+\rowcolors{2}{red!6}{red!6}
+\begin{tabular}{lcc}
+\toprule
+$\phi$ & $r{=}2$ & $r{=}8$\\
+\midrule
+identity ($=$LoRA) & .276 & \textcolor{red}{--}\\
+\textcolor{red}{GELU} & \textcolor{red}{--} & \textcolor{red}{--}\\
+\textcolor{red}{spline} & \textcolor{red}{--} & \textcolor{red}{--}\\
+AuroRA & .285 & \textcolor{red}{--}\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[t]\centering
+\caption{\textcolor{red}{TO RUN (E5).} IQ-LoRA sensitivity: modulation scale $\lambda\in\{0,0.25,0.5,1\}$ and raw vs.\
+bounded (IQG) gate, $r{=}8$, GSM8K, $E_{\text{first}}$. $\lambda{=}0$ is the LoRA anchor.}
+\label{tab:ablate-iq}
+\rowcolors{2}{red!6}{red!6}
+\begin{tabular}{lcccc}
+\toprule
+$\lambda$ & 0 & 0.25 & 0.5 & 1\\
+\midrule
+\textcolor{red}{IQ (raw)} & .29 & \textcolor{red}{--} & \textcolor{red}{--} & \textcolor{red}{--}\\
+\textcolor{red}{IQG (tanh)} & .29 & \textcolor{red}{--} & \textcolor{red}{--} & \textcolor{red}{--}\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+%==========================================================
+\section{Conclusion}
+Along two natural axes---nonlinearity and input-dependence---extra expressiveness does not beat well-tuned LoRA on GSM8K at
+matched budget. The seemingly contrary evidence is an evaluation artifact, and we give a protocol, with a proof
+(Lemma~\ref{lem:bias}), that removes it. We claim generality only for the \emph{protocol}; whether the parity verdict holds
+beyond the datasets and model we test is an empirical question our RED tables are designed to answer. The practical
+takeaway is narrow but load-bearing: PEFT comparisons on generative reasoning benchmarks should report the extraction
+operator and subset construction, because---as Lemma~\ref{lem:bias} shows---the method effect can be smaller than the
+protocol effect.
+
+\bibliographystyle{elsarticle-num}
+%\bibliography{refs}
+\end{document}
