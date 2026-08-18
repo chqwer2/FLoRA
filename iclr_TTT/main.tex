@@ -27,8 +27,11 @@ suffers a \emph{train/generation mismatch}, adapting to its own (possibly wrong)
 fix it with an online delta-rule fast-weight branch whose recurrence is \emph{identical} at training and autoregressive
 generation, has a learnable decay (not a prefix mean), and runs in $O(N)$. The branch realizes an input-conditional
 low-rank operator $\Delta\W(\x_{1:t})$ that no static PEFT can express (Prop.~\ref{prop:cond}), reducing to the frozen
-model at zero step size. On GSM8K-family reasoning with Llama-2-7B, the claim is in-distribution parity with LoRA and a
-\emph{growing} advantage as distribution shift increases. \textcolor{red}{(Core results RED---to run; see Sec.~5.)}
+model at zero step size. We prove the source of any robustness gain: a static update pays the cross-context variance of the
+optimal correction---exactly what shift inflates---while the online update's error is capped by its adaptation rate and is
+shift-free (Prop.~\ref{prop:ood}). On GSM8K-family reasoning with Llama-2-7B, the resulting prediction is in-distribution
+parity with LoRA and a \emph{growing} advantage as distribution shift increases. \textcolor{red}{(Core results RED---to
+run; see Sec.~\ref{sec:exp}.)}
 \end{abstract}
 
 \section{Introduction}
@@ -40,7 +43,7 @@ parameters on a self-supervised objective computed from the test input itself.
 We ask a specific question: \emph{can test-time training serve as the PEFT mechanism for a frozen LLM, and does it buy
 robustness to distribution shift?} A direct attempt---bolt a TTT inner loop onto a frozen model as an additive branch---
 \emph{fails}: in our experiments it underperforms LoRA everywhere (Sec.~\ref{sec:diag}). We trace this to a concrete cause,
-a train/generation mismatch, and remove it. The fixed method is a small online fast-weight branch that (i) adapts per
+a train/generation mismatch, and remove it. The fixed method is a small online fast-weight branch (Fig.~\ref{fig:arch}) that (i) adapts per
 input, (ii) uses the \emph{same} recurrence at training and generation, and (iii) costs $O(N)$.
 
 \paragraph{Contributions.}

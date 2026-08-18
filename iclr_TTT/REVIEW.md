@@ -46,6 +46,20 @@ Scores: Novelty 7.5->8, Math 8.5, Writing 8, Presentation 7. Results 3 (RED), Ex
   without the in-dist parity + monotone OOD-robustness result. This needs cluster + author go-ahead.
 => After ~1 polish loop, stop and hand to experiments (do not spin writing).
 
+## Iteration 4 done — NOVELTY WRITING SATURATED, loop stopping
+- [x] Abstract now names the mechanism (Prop.OOD: static pays cross-context variance = shift; adaptive error is shift-free).
+- [x] Intro references the schematic (fig:arch). LaTeX self-consistent: all \ref have \label, no dangling refs.
+FINAL writing scores: Novelty 8, Math 8.5, Writing 8, Presentation 7.5. Results 3 (RED), Experiments 5 (designed).
+
+## The paper is as strong as writing alone allows. Remaining is NOT writing — it gates ICLR acceptance:
+### A. Build + run (cluster; author go-ahead) — see EXPERIMENTS_TODO.md
+- STEP 0: implement consistent-TTT (Eq.2) — replace prefix-mean state in ttt_branch4.py with the online delta rule.
+- STEP 1 Table indist (parity), STEP 2 Table diag (fix vs naive), STEP 3 Table ood + Fig money (THE thesis),
+  STEP 4 Table ablate (causal isolation). Submission bar: parity AND monotone OOD gap, both black.
+### B. Mechanical: \todocite -> real refs (LoRA, DoRA, TTT, TENT, delta-rule, DeltaNet, Mamba, TTT-Linear, GSM8K/-Symbolic).
+### C. Author: confirm the OOD shift ladder (which datasets) + second-model choice for scale.
+Do NOT spin more writing loops — the innovation is written; the paper now needs the result.
+
 ## Author/experiment note
 The consistent-TTT module (Eq.2) is NEW code — the repo's ttt_branch4.py is the teacher-forced version to be replaced.
 See EXPERIMENTS_TODO.md.
