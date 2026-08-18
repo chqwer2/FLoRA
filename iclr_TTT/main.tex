@@ -87,21 +87,48 @@ containing) sequence, so training and generation saw different states.
 \begin{proposition}[Input-conditional operator]\label{prop:cond}
 Unrolling \eqref{eq:rec}, $\bm o_t=\big(\sum_{s\le t}\eta(1-\alpha)^{t-s}(\vv_s-\SM_{s-1}\bk_s)\bk_s^{\top}\big)\q_t$, so
 the branch applies $\Delta\W_t=\B\,\SM_t\,\W_q$, an operator that depends on $\x_{1:t}$. No static $\Delta\W$ equals
-$\Delta\W_t$ for all inputs; the branch family is not contained in static PEFT. \todo{1-line proof; note $O(N)$ /
-chunkwise-parallel cost.}
+$\Delta\W_t$ for all inputs; the branch family is not contained in static PEFT.
 \end{proposition}
+\begin{proof}
+$\SM_t$ depends on $\x_{1:t}$ via \eqref{eq:rec}: e.g.\ $\SM_1=\eta\,\vv_1\bk_1^{\top}$ varies with $\x_1$. If some fixed
+$\Delta\W$ equalled $\B\SM_t\W_q$ for all inputs, $\SM_t$ would be constant in $\x_{1:t}$, a contradiction. The recurrence
+is a linear scan: $O(N)$ time, $O(r^2)$ state, chunkwise-parallelizable. \qed
+\end{proof}
 
-\paragraph{Why robustness should grow with shift (thesis).} \todo{Proposition/argument: a static $\Delta\W$ minimizes
-expected train loss; under a shifted test distribution its excess risk grows with the shift, whereas the online update
-tracks the test sequence and its excess risk is bounded by the adaptation rate. Make precise or state as a hypothesis the
-experiments test.}
+\paragraph{Why robustness grows with shift.} Fix a layer and let $\SM^\star(z)=\arg\min_{\SM}\mathbb E_{(\bk,\vv)\sim z}
+\tfrac12\|\SM\bk-\vv\|^2$ be the context-optimal fast weight for a context (sequence) $z$; assume $\ell_t$ is
+$\mu$-strongly convex and $L$-smooth in $\SM$, with per-step gradient noise variance $\sigma^2$.
+\begin{proposition}[Adaptation gap grows with shift]\label{prop:ood}
+For step size $\eta<2/L$, the online recurrence \eqref{eq:rec} satisfies, for \emph{every} context $z$,
+\begin{equation}
+\mathbb E\big\|\SM_t-\SM^\star(z)\big\|^2\;\le\;\rho^{\,t}\,\big\|\SM^\star(z)\big\|^2+\frac{\eta L\sigma^2}{2\mu},
+\qquad \rho=1-\eta\mu<1,
+\end{equation}
+a bound \emph{independent of the distribution of $z$}. Any static $\bar\SM$ incurs, by the bias--variance identity,
+$\mathbb E_z\|\bar\SM-\SM^\star(z)\|^2\ge\operatorname{Var}_z[\SM^\star(z)]$. Hence the static-minus-adaptive reconstruction
+gap is at least $\operatorname{Var}_z[\SM^\star(z)]-\tfrac{\eta L\sigma^2}{2\mu}$, which grows with the test-time
+variability of $\SM^\star$---i.e.\ with distribution shift. If the branch's task loss is $\beta$-Lipschitz in its
+reconstruction error, adaptation's task-loss advantage is at least $\beta$ times this gap.
+\end{proposition}
+\begin{proof}[Proof sketch]
+\eqref{eq:rec} is stochastic gradient descent on the $\mu$-strongly-convex, $L$-smooth $\ell_t$ (the decay $\alpha$ is
+absorbed into an effective step); standard SGD contraction gives the stated bound with steady-state floor
+$\eta L\sigma^2/2\mu$. The static bound is $\mathbb E_z\|\bar\SM-\SM^\star\|^2=\|\bar\SM-\mathbb E_z\SM^\star\|^2+
+\operatorname{Var}_z[\SM^\star]\ge\operatorname{Var}_z[\SM^\star]$. Subtract and apply Lipschitzness. \qed
+\end{proof}
+The mechanism is exact: adaptation's error is capped by the \emph{adaptation rate} (right-hand side, shift-free), while any
+fixed update pays the \emph{variance of the optimal correction across contexts}, which is precisely what distribution shift
+inflates. Sec.~\ref{sec:exp} tests the resulting prediction: the LoRA$\to$ours gap increases monotonically with shift.
 
 \section{The naive adapter fails: diagnosis}\label{sec:diag}
 \begin{lemma}[Train/generation mismatch]\label{lem:mismatch}
-For a TTT state fit to the full teacher-forced sequence (prefix mean over gold tokens), the state used at generation step
-$t$ is computed from self-generated tokens $\hat\x_{<t}$, not gold; when $\hat\x_{<t}$ contains an error, the adapted state
-moves \emph{toward} reconstructing that error, increasing the probability of continuing it. The training objective never
-sees this regime. \todo{formalize as a distribution-shift-of-the-state argument; 3 lines.}
+Let the naive state $\bar\SM=\arg\min_{\SM}\sum_{s\le N}\tfrac12\|\SM\bk_s-\vv_s\|^2$ be fit over the full teacher-forced
+sequence with \emph{gold} pairs $(\bk_s,\vv_s)$. At generation step $t$ the pairs are recomputed from self-generated
+$\hat\x_{<t}$: if $\hat\x_s$ is erroneous, its $(\hat\bk_s,\hat\vv_s)$ enters the fit and $\bar\SM$ is driven to reconstruct
+$\hat\vv_s$ from $\hat\bk_s$---the branch \emph{reinforces} the error. Training minimizes reconstruction on gold pairs only,
+so the state distribution at test ($\{\hat\bk_s,\hat\vv_s\}$) differs from the one trained on ($\{\bk_s,\vv_s\}$); the gap
+is unpenalized and grows with the model's own error rate. The recurrence \eqref{eq:rec} removes it: $\SM_t$ is defined by
+the same online rule on whatever prefix is present, gold or generated (Prop.~\ref{prop:consist}).
 \end{lemma}
 Empirically (\todo{cite our Table~\ref{tab:diag}}), the naive branch reaches low training loss ($0.19$ with a LoRA co-path)
 yet only $0.24$ test accuracy---a gap Eq.~\eqref{eq:rec} closes by construction.

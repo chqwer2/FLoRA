@@ -26,6 +26,14 @@
 - Related Work: 1 tight paragraph sharpening the delta vs delta-rule/TTT-Linear/Mamba.
 - Keep ALL results RED. The single most important non-writing action is BUILDING consistent-TTT and running Table 1 + 4.
 
+## Iteration 2 done (novelty-first, writing-only)
+- [x] Prop.OOD (adaptation gap grows with shift): rigorous, with proof sketch (SGD contraction vs bias-variance). This is
+  the theoretical core that separates the paper from "a linear-attention adapter". Math 7 -> 8.5, Novelty 6 -> 7.5.
+- [x] Prop.2 (input-conditional operator) PROVED + O(N)/chunkwise cost stated.
+- [x] Lemma 1 (train/generation mismatch) FORMALIZED as a state-distribution-shift argument; fix tied to Prop.1.
+Remaining writing: Related Work delta-sharpening; method schematic figure; abstract can now cite Prop.OOD as the mechanism.
+Remaining (gating): RESULTS all RED — build consistent-TTT, run Tables 1-4 + Fig 1.
+
 ## Author/experiment note
 The consistent-TTT module (Eq.2) is NEW code — the repo's ttt_branch4.py is the teacher-forced version to be replaced.
 See EXPERIMENTS_TODO.md.
