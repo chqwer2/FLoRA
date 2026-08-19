@@ -71,3 +71,14 @@ See EXPERIMENTS_TODO.md.
 - [x] Build: 33.7M trainable (0.53%). Smoke had a grad-flag bug (smoke path only; train() is correct).
 - [ ] STEP1 (job 9643908): full train + gsm8k eval, in-dist parity vs LoRA (0.33) / naive branch (0.24-0.30). PENDING.
 Next: read STEP1 result -> fill Table indist -> STEP2 (fix vs naive) -> STEP3 OOD ladder.
+
+## EXPERIMENT PHASE — iter 2 (STEP1 result: NEGATIVE, honest)
+STEP1 consistent-TTT gsm8k = **0.147** (1 seed, n150). WORSE than naive branch (0.24-0.30) and far below LoRA (0.33).
+Learned eta->0.086 (tiny adaptation). Interpretation: the branch learned to contribute ~nothing useful; 0.147 is near the
+FROZEN base level. The RMSNorm-stabilized gated-linear-attention branch, like the whole branch line, does NOT learn useful
+in-dist task adaptation (it only adds to attention output; LoRA edits q/k/v/up/down). 
+VERDICT: STEP1 parity gate FAILED, badly. A method at 0.147 in-dist cannot support an ICLR paper regardless of OOD, so
+STEP3 (OOD) is moot until in-dist is fixed. This is the SECOND negative result for the TTT-as-PEFT branch (naive + consistent).
+Honest read: the TTT branch architecture is the problem, not just the recurrence. Options: (a) let branch also edit q/k/v
+(not just add to attn out) — but that's converging to LoRA; (b) accept the negative result and shelve the ICLR TTT paper.
+Do NOT keep burning contended GPU chasing a method that's below the frozen baseline.
